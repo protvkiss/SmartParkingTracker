@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "SmartParkingTracker",
+    "slug": "smart-parking-tracker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "smartparking",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "icon": "./assets/expo.icon"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0F172A",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0284C7",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 80
+        }
+      ],
+      "expo-location",
+      "expo-font",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Ứng dụng cần quyền xem ảnh để lưu giữ vị trí ô đỗ.",
+          "cameraPermission": "Ứng dụng cần quyền camera để chụp ảnh vị trí phương tiện.",
+          "microphonePermission": false
+        }
+      ],
+      "expo-status-bar"
+    ]
+  }
+}
