@@ -17,7 +17,6 @@ import {
 import MapView, { Marker } from "react-native-maps";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
-import { Audio } from "expo-av";
 import { Ionicons } from "@expo/vector-icons";
 
 import ActionButton from "~/components/ActionButton";
@@ -29,6 +28,12 @@ import { useLiveLocation } from "~/hooks/useLiveLocation";
 import { resolveStreetAddress } from "~/services/addressResolver";
 import { buildMapRegion } from "~/services/mapLauncher";
 import { archiveSnapshot, evictSnapshot } from "~/services/photoVault";
+import {
+  beginVoiceRecording,
+  finishVoiceRecording,
+  createSafeAudioPlayer,
+  isAudioFeatureAvailable,
+} from "~/services/audioService";
 import { useParkingStore } from "~/state/ParkingStore";
 import { formatTimeOnly } from "~/utils/timeAgo";
 
@@ -125,7 +130,11 @@ export default function CheckInScreen({ navigation }) {
     return () => {
       if (recordTimerRef.current) clearInterval(recordTimerRef.current);
       if (soundRef.current) {
-        soundRef.current.unloadAsync().catch(() => {});
+        if (soundRef.current.release) {
+          soundRef.current.release();
+        } else if (soundRef.current.unloadAsync) {
+          soundRef.current.unloadAsync().catch(() => {});
+        }
       }
     };
   }, []);
@@ -244,23 +253,8 @@ export default function CheckInScreen({ navigation }) {
 
   const onStartRecordAudio = async () => {
     try {
-      const { status } = await Audio.requestPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert(
-          "Quyền Microphone",
-          "Vui lòng cấp quyền micro trong cài đặt điện thoại để sử dụng tính năng ghi âm chỉ dẫn vị trí.",
-        );
-        return;
-      }
-
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-
-      const { recording: newRecording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY,
-      );
+      const newRecording = await beginVoiceRecording();
+      if (!newRecording) return;
 
       setRecording(newRecording);
       setIsRecording(true);
@@ -280,16 +274,10 @@ export default function CheckInScreen({ navigation }) {
     try {
       if (recordTimerRef.current) clearInterval(recordTimerRef.current);
       setIsRecording(false);
-      await recording.stopAndUnloadAsync();
-      const uri = recording.getURI();
+      const uri = await finishVoiceRecording(recording);
       setVoiceUri(uri);
       setVoiceDuration(recordDuration);
       setRecording(null);
-
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-      });
     } catch (err) {
       console.warn("Lỗi dừng ghi âm:", err);
     }
@@ -300,7 +288,7 @@ export default function CheckInScreen({ navigation }) {
     try {
       if (recordTimerRef.current) clearInterval(recordTimerRef.current);
       setIsRecording(false);
-      await recording.stopAndUnloadAsync();
+      await finishVoiceRecording(recording);
       setRecording(null);
       setRecordDuration(0);
     } catch (err) {
@@ -311,7 +299,11 @@ export default function CheckInScreen({ navigation }) {
   const onDeleteVoiceNote = async () => {
     if (soundRef.current) {
       try {
-        await soundRef.current.unloadAsync();
+        if (soundRef.current.release) {
+          soundRef.current.release();
+        } else if (soundRef.current.unloadAsync) {
+          await soundRef.current.unloadAsync();
+        }
         soundRef.current = null;
       } catch (e) {}
     }
@@ -325,25 +317,23 @@ export default function CheckInScreen({ navigation }) {
     try {
       if (soundRef.current) {
         if (isPlayingVoice) {
-          await soundRef.current.pauseAsync();
+          if (soundRef.current.pause) soundRef.current.pause();
           setIsPlayingVoice(false);
         } else {
-          await soundRef.current.playAsync();
+          if (soundRef.current.play) soundRef.current.play();
           setIsPlayingVoice(true);
         }
       } else {
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: voiceUri },
-          { shouldPlay: true },
-          (status) => {
-            if (status.isLoaded && status.didJustFinish) {
-              setIsPlayingVoice(false);
-              sound.setPositionAsync(0);
-            }
-          },
-        );
-        soundRef.current = sound;
-        setIsPlayingVoice(true);
+        const player = createSafeAudioPlayer(voiceUri, (status) => {
+          if (status?.didJustFinish || (status?.isLoaded && !status?.playing && status?.currentTime >= (status?.duration || 0))) {
+            setIsPlayingVoice(false);
+          }
+        });
+        if (player) {
+          soundRef.current = player;
+          if (player.play) player.play();
+          setIsPlayingVoice(true);
+        }
       }
     } catch (err) {
       console.warn("Lỗi phát âm thanh:", err);

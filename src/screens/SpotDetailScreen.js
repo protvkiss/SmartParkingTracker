@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from "react";
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import MapView, { Marker } from "react-native-maps";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { Audio } from "expo-av";
 import { Ionicons } from "@expo/vector-icons";
 
 import ActionButton from "~/components/ActionButton";
@@ -13,6 +12,7 @@ import { Elevation, Metrics, Palette } from "~/core/theme";
 import { useLiveLocation } from "~/hooks/useLiveLocation";
 import { shareSpotDetails } from "~/services/contentSharer";
 import { buildMapRegion, launchExternalDirections } from "~/services/mapLauncher";
+import { createSafeAudioPlayer } from "~/services/audioService";
 import { useParkingStore } from "~/state/ParkingStore";
 import { computeSurfaceDistance, formatMetricDistance } from "~/utils/geoMath";
 import { formatFullDateTime, formatParkingDuration, formatTimeOnly, formatTimeRemaining } from "~/utils/timeAgo";
@@ -42,7 +42,11 @@ export default function SpotDetailScreen({ route, navigation }) {
   useEffect(() => {
     return () => {
       if (soundInstanceRef.current) {
-        soundInstanceRef.current.unloadAsync().catch(() => {});
+        if (soundInstanceRef.current.release) {
+          soundInstanceRef.current.release();
+        } else if (soundInstanceRef.current.unloadAsync) {
+          soundInstanceRef.current.unloadAsync().catch(() => {});
+        }
       }
     };
   }, []);
@@ -53,34 +57,28 @@ export default function SpotDetailScreen({ route, navigation }) {
     try {
       if (soundInstanceRef.current) {
         if (isPlaying) {
-          await soundInstanceRef.current.pauseAsync();
+          if (soundInstanceRef.current.pause) soundInstanceRef.current.pause();
           setIsPlaying(false);
         } else {
-          await soundInstanceRef.current.playAsync();
+          if (soundInstanceRef.current.play) soundInstanceRef.current.play();
           setIsPlaying(true);
         }
       } else {
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: false,
-          playsInSilentModeIOS: true,
+        const player = createSafeAudioPlayer(record.voiceNoteUri, (status) => {
+          if (status?.currentTime) {
+            setPlaybackSecs(Math.floor(status.currentTime / 1000));
+          }
+          if (status?.didJustFinish || (status?.isLoaded && !status?.playing && status?.currentTime >= (status?.duration || 0))) {
+            setIsPlaying(false);
+            setPlaybackSecs(0);
+          }
         });
 
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: record.voiceNoteUri },
-          { shouldPlay: true },
-          (status) => {
-            if (status.isLoaded) {
-              setPlaybackSecs(Math.floor((status.positionMillis || 0) / 1000));
-              if (status.didJustFinish) {
-                setIsPlaying(false);
-                setPlaybackSecs(0);
-                sound.setPositionAsync(0);
-              }
-            }
-          },
-        );
-        soundInstanceRef.current = sound;
-        setIsPlaying(true);
+        if (player) {
+          soundInstanceRef.current = player;
+          if (player.play) player.play();
+          setIsPlaying(true);
+        }
       }
     } catch (err) {
       console.warn("Lỗi phát ghi âm:", err);
