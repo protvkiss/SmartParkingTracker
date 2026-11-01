@@ -67,7 +67,7 @@ function calculateMinutesFromClockTime(hourStr, minStr) {
 
 export default function CheckInScreen({ navigation }) {
   const insets = useSafeAreaInsets();
-  const { checkInSpot, vehicles, defaultVehicle } = useParkingStore();
+  const { checkInSpot, vehicles, defaultVehicle, activeSpots = [] } = useParkingStore();
   const { coords, busy: locating, errorMessage: gpsError, refreshLocation } = useLiveLocation();
 
   const mapInstance = useRef(null);
@@ -78,8 +78,11 @@ export default function CheckInScreen({ navigation }) {
   const [addressInput, setAddressInput] = useState("");
   const [resolvingAddress, setResolvingAddress] = useState(false);
 
-  // Phương tiện được chọn (nếu chưa có xe đăng ký thì null)
-  const [selectedVehicle, setSelectedVehicle] = useState(defaultVehicle || vehicles[0] || null);
+  // Phương tiện được chọn (ưu tiên chọn xe chưa có điểm đỗ nếu có nhiều xe)
+  const unparkedVehicle = vehicles.find((v) => !activeSpots.some((s) => s.vehicleId === v.id));
+  const [selectedVehicle, setSelectedVehicle] = useState(
+    unparkedVehicle || defaultVehicle || vehicles[0] || null,
+  );
   const [vehicleModalVisible, setVehicleModalVisible] = useState(false);
 
   // Hẹn giờ giới hạn đỗ xe
@@ -124,9 +127,10 @@ export default function CheckInScreen({ navigation }) {
     if (vehicles.length === 0) {
       setSelectedVehicle(null);
     } else if (!selectedVehicle || !vehicles.some((v) => v.id === selectedVehicle.id)) {
-      setSelectedVehicle(defaultVehicle || vehicles[0] || null);
+      const nextUnparked = vehicles.find((v) => !activeSpots.some((s) => s.vehicleId === v.id));
+      setSelectedVehicle(nextUnparked || defaultVehicle || vehicles[0] || null);
     }
-  }, [defaultVehicle, selectedVehicle, vehicles]);
+  }, [defaultVehicle, selectedVehicle, vehicles, activeSpots]);
 
   const syncCoordinates = useCallback(
     async (target, { panMap = false } = {}) => {
@@ -406,6 +410,22 @@ export default function CheckInScreen({ navigation }) {
                 </View>
               </Pressable>
             )}
+
+            {selectedVehicle && activeSpots.some((s) => s.vehicleId === selectedVehicle?.id) ? (
+              <View style={styles.vehicleMultiNoticeBox}>
+                <Ionicons name="refresh-circle-outline" size={14} color={Palette.alert} />
+                <Text style={styles.vehicleMultiNoticeText}>
+                  Xe này đang có 1 điểm đỗ. Lưu mới sẽ cập nhật điểm đỗ mới cho xe này.
+                </Text>
+              </View>
+            ) : selectedVehicle && activeSpots.length > 0 ? (
+              <View style={styles.vehicleMultiNoticeBox}>
+                <Ionicons name="layers-outline" size={14} color={Palette.brand} />
+                <Text style={styles.vehicleMultiNoticeText}>
+                  Đang có {activeSpots.length} xe khác đang đỗ. Vị trí xe này sẽ được lưu song song!
+                </Text>
+              </View>
+            ) : null}
           </View>
 
           {/* Card 2: Bản đồ tương tác */}
@@ -704,8 +724,9 @@ export default function CheckInScreen({ navigation }) {
                         styles.timerModeTabText,
                         timerMode === "clock" && styles.timerModeTabTextActive,
                       ]}
+                      numberOfLines={1}
                     >
-                      Theo giờ hẹn (vd: 22:00)
+                      Theo giờ hẹn
                     </Text>
                   </Pressable>
                 </View>
@@ -926,6 +947,7 @@ export default function CheckInScreen({ navigation }) {
             <ScrollView style={styles.vehicleListScroll}>
               {vehicles.map((v) => {
                 const isSelected = selectedVehicle?.id === v.id;
+                const isParked = activeSpots.some((s) => s.vehicleId === v.id);
                 return (
                   <Pressable
                     key={v.id}
@@ -952,9 +974,16 @@ export default function CheckInScreen({ navigation }) {
                         />
                       </View>
                       <View>
-                        <Text style={[styles.itemName, isSelected && styles.itemNameActive]}>
-                          {v.name}
-                        </Text>
+                        <View style={styles.nameAndBadgeRow}>
+                          <Text style={[styles.itemName, isSelected && styles.itemNameActive]}>
+                            {v.name}
+                          </Text>
+                          {isParked ? (
+                            <View style={styles.parkedStatusPill}>
+                              <Text style={styles.parkedStatusPillText}>ĐANG ĐỖ</Text>
+                            </View>
+                          ) : null}
+                        </View>
                         <Text style={styles.itemPlate}>
                           {v.licensePlate ? `Biển: ${v.licensePlate}` : "Không có biển số"}
                         </Text>
@@ -1363,7 +1392,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 7,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
     borderRadius: Metrics.radiusPill,
     gap: 6,
   },
@@ -1710,5 +1740,38 @@ const styles = StyleSheet.create({
   itemPlate: {
     fontSize: Metrics.fontXs,
     color: Palette.inkMuted,
+  },
+  nameAndBadgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  parkedStatusPill: {
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: Metrics.radiusPill,
+    borderWidth: 1,
+    borderColor: Palette.brand,
+  },
+  parkedStatusPillText: {
+    fontSize: 9,
+    fontWeight: "800",
+    color: Palette.brandDark,
+  },
+  vehicleMultiNoticeBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.cardSubtle,
+    borderRadius: Metrics.radiusSm,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginTop: 8,
+    gap: 6,
+  },
+  vehicleMultiNoticeText: {
+    fontSize: Metrics.fontXs,
+    color: Palette.inkMuted,
+    flex: 1,
   },
 });

@@ -79,9 +79,13 @@ export function ParkingStoreProvider({ children }) {
     };
   }, []);
 
-  const activeSpot = useMemo(() => {
-    return state.records.find((rec) => rec.state === "OCCUPIED") || null;
+  const activeSpots = useMemo(() => {
+    return state.records.filter((rec) => rec.state === "OCCUPIED");
   }, [state.records]);
+
+  const activeSpot = useMemo(() => {
+    return activeSpots[0] || null;
+  }, [activeSpots]);
 
   const defaultVehicle = useMemo(() => {
     return state.vehicles.find((v) => v.isDefault) || state.vehicles[0] || null;
@@ -225,9 +229,16 @@ export function ParkingStoreProvider({ children }) {
         notificationIds,
       };
 
+      // Chỉ lưu trữ/giải phóng phiên đỗ cũ của CHÍNH XE NÀY nếu xe này đang có điểm đỗ
+      // Các xe khác vẫn giữ nguyên trạng thái OCCUPIED để người dùng có thể đỗ song song nhiều xe
       const archivedPrior = state.records.map((r) => {
-        if (r.state === "OCCUPIED") {
-          // Hủy thông báo của phiên đỗ cũ nếu có
+        const isSameVehicle =
+          r.state === "OCCUPIED" &&
+          ((selectedVeh?.id && r.vehicleId === selectedVeh.id) ||
+            (!selectedVeh?.id && !r.vehicleId && r.vehicleName === (selectedVeh?.name || "Phương tiện")));
+
+        if (isSameVehicle) {
+          // Hủy thông báo của phiên đỗ cũ của xe này nếu có
           if (r.notificationIds?.length > 0) {
             cancelParkingAlerts(r.notificationIds);
           }
@@ -320,6 +331,7 @@ export function ParkingStoreProvider({ children }) {
   const contextValue = useMemo(
     () => ({
       activeSpot,
+      activeSpots,
       sessionLogs: state.records,
       vehicles: state.vehicles,
       defaultVehicle,
@@ -336,6 +348,7 @@ export function ParkingStoreProvider({ children }) {
     }),
     [
       activeSpot,
+      activeSpots,
       state.records,
       state.vehicles,
       defaultVehicle,
