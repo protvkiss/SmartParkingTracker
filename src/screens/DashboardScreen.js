@@ -30,6 +30,21 @@ import {
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
+/**
+ * Tính toán tọa độ tâm bản đồ để điểm đánh dấu xe nằm ngay chính giữa
+ * phần màn hình nhìn thấy được (không bị che bởi thẻ thông tin phía dưới).
+ */
+function buildVisibleSpotRegion(latitude, longitude, span = 0.004) {
+  // Dịch tâm camera xuống phía Nam để điểm đỗ xe nằm ngay trung tâm phần màn hình nhìn thấy được phía trên thẻ
+  const latitudeOffset = span * 0.22;
+  return {
+    latitude: (Number(latitude) || 0) - latitudeOffset,
+    longitude: Number(longitude) || 0,
+    latitudeDelta: Math.max(span, 0.001),
+    longitudeDelta: Math.max(span, 0.001),
+  };
+}
+
 export default function DashboardScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const { activeSpots = [], vacateCurrentSpot, isLoading } = useParkingStore();
@@ -61,16 +76,20 @@ export default function DashboardScreen({ navigation }) {
 
   const currentSpot = activeSpots[activeSpotIndex] || activeSpots[0] || null;
 
-  // Tự động căn giữa bản đồ vào vị trí phương tiện đang được chọn
+  // Tự động căn giữa bản đồ vào vị trí phương tiện đang được chọn (không bị che bởi thẻ)
   useEffect(() => {
-    const target = currentSpot?.position || coords;
-    if (target && mapElement.current) {
+    if (currentSpot?.position && mapElement.current) {
       mapElement.current.animateToRegion(
-        buildMapRegion(
-          target.latitude,
-          target.longitude,
-          currentSpot ? 0.004 : 0.008,
+        buildVisibleSpotRegion(
+          currentSpot.position.latitude,
+          currentSpot.position.longitude,
+          0.004,
         ),
+        450,
+      );
+    } else if (coords && mapElement.current) {
+      mapElement.current.animateToRegion(
+        buildMapRegion(coords.latitude, coords.longitude, 0.008),
         450,
       );
     }
@@ -78,8 +97,6 @@ export default function DashboardScreen({ navigation }) {
     currentSpot?.id,
     currentSpot?.position?.latitude,
     currentSpot?.position?.longitude,
-    coords?.latitude,
-    coords?.longitude,
   ]);
 
   const onOpenDirections = (spot) => {
@@ -151,7 +168,7 @@ export default function DashboardScreen({ navigation }) {
       const targetSpot = activeSpots[index];
       if (targetSpot?.position && mapElement.current) {
         mapElement.current.animateToRegion(
-          buildMapRegion(targetSpot.position.latitude, targetSpot.position.longitude, 0.004),
+          buildVisibleSpotRegion(targetSpot.position.latitude, targetSpot.position.longitude, 0.004),
           400,
         );
       }
@@ -166,27 +183,42 @@ export default function DashboardScreen({ navigation }) {
       const targetSpot = activeSpots[newIndex];
       if (targetSpot?.position && mapElement.current) {
         mapElement.current.animateToRegion(
-          buildMapRegion(targetSpot.position.latitude, targetSpot.position.longitude, 0.004),
+          buildVisibleSpotRegion(targetSpot.position.latitude, targetSpot.position.longitude, 0.004),
           400,
         );
       }
     }
   };
 
-  const onRecenterMap = async () => {
-    if (currentSpot?.position) {
-      mapElement.current?.animateToRegion(
-        buildMapRegion(currentSpot.position.latitude, currentSpot.position.longitude, 0.004),
+  // Kéo màn hình map về vị trí phương tiện đang đỗ (ở giữa vùng màn hình còn lại không bị che)
+  const onCenterOnSpot = (spot) => {
+    const target = spot || currentSpot;
+    if (target?.position && mapElement.current) {
+      mapElement.current.animateToRegion(
+        buildVisibleSpotRegion(target.position.latitude, target.position.longitude, 0.004),
         350,
       );
-    } else {
-      const loc = (await refreshLocation()) || coords;
-      if (loc) {
-        mapElement.current?.animateToRegion(
-          buildMapRegion(loc.latitude, loc.longitude, 0.006),
-          350,
-        );
-      }
+    }
+  };
+
+  // Chuyển sang phương tiện tiếp theo (khi có nhiều hơn 1 xe)
+  const onCycleNextVehicle = () => {
+    if (activeSpots.length <= 1) {
+      onCenterOnSpot(currentSpot);
+      return;
+    }
+    const nextIndex = (activeSpotIndex + 1) % activeSpots.length;
+    onSelectSpotByIndex(nextIndex);
+  };
+
+  // Định vị GPS vị trí hiện tại của người dùng
+  const onRecenterGPS = async () => {
+    const loc = (await refreshLocation()) || coords;
+    if (loc && mapElement.current) {
+      mapElement.current.animateToRegion(
+        buildMapRegion(loc.latitude, loc.longitude, 0.006),
+        350,
+      );
     }
   };
 
@@ -212,31 +244,76 @@ export default function DashboardScreen({ navigation }) {
       <View key={spot.id} style={styles.cardPageWrapper}>
         <View style={styles.cardFrame}>
           <View style={styles.activeSpotContent}>
-            {/* Header của thẻ xe: Trạng thái & Tên Phương Tiện */}
+            {/* Header của thẻ xe: Trạng thái & Nút chuyển/kéo về xe bên phải thẻ đang đỗ */}
             <View style={styles.cardHeaderRow}>
-              <View style={styles.vehicleStatusCluster}>
+              <View style={styles.cardHeaderLeftGroup}>
                 <StatusPill isOccupied />
 
-                {/* Huy hiệu phương tiện đỗ */}
-                <View style={styles.vehicleBadgePill}>
-                  <Ionicons
-                    name={getVehicleIcon(spot.vehicleType)}
-                    size={12}
-                    color={Palette.brandDark}
-                  />
-                  <Text style={styles.vehicleBadgeText} numberOfLines={1}>
-                    {spot.vehicleName || "Xe của bạn"}
-                  </Text>
-                </View>
+                {/* Nút chuyển thiết bị hoặc kéo về vị trí xe đang đỗ */}
+                {activeSpots.length > 1 ? (
+                  <Pressable
+                    onPress={onCycleNextVehicle}
+                    style={({ pressed }) => [
+                      styles.deviceSwitcherBtn,
+                      pressed && styles.deviceSwitcherBtnPressed,
+                    ]}
+                    hitSlop={6}
+                    accessibilityRole="button"
+                    accessibilityLabel="Chuyển sang xe tiếp theo"
+                  >
+                    <Ionicons name="swap-horizontal" size={13} color={Palette.brand} />
+                    <Text style={styles.deviceSwitcherBtnText} numberOfLines={1}>
+                      Chuyển xe ({activeSpotIndex + 1}/{activeSpots.length})
+                    </Text>
+                    <Ionicons name="chevron-forward" size={12} color={Palette.brand} />
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    onPress={() => onCenterOnSpot(spot)}
+                    style={({ pressed }) => [
+                      styles.recenterSpotBtn,
+                      pressed && styles.recenterSpotBtnPressed,
+                    ]}
+                    hitSlop={6}
+                    accessibilityRole="button"
+                    accessibilityLabel="Kéo bản đồ về vị trí xe đang đỗ"
+                  >
+                    <Ionicons name="locate" size={13} color={Palette.brand} />
+                    <Text style={styles.recenterSpotBtnText}>Về vị trí xe</Text>
+                  </Pressable>
+                )}
               </View>
 
               <Pressable
                 onPress={() => onInspectDetail(spot.id)}
                 style={({ pressed }) => [styles.infoCircleBtn, pressed && { opacity: 0.7 }]}
                 hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Xem chi tiết phiên đỗ"
               >
                 <Ionicons name="information-circle-outline" size={20} color={Palette.inkMuted} />
               </Pressable>
+            </View>
+
+            {/* Dòng hiển thị Tên xe & thời gian đỗ */}
+            <View style={styles.vehicleSubHeaderRow}>
+              <View style={styles.vehicleBadgePill}>
+                <Ionicons
+                  name={getVehicleIcon(spot.vehicleType)}
+                  size={12}
+                  color={Palette.brandDark}
+                />
+                <Text style={styles.vehicleBadgeText} numberOfLines={1}>
+                  {spot.vehicleName || "Phương tiện"}
+                </Text>
+              </View>
+
+              {spotDurationStr && !spotTimeRemainingStr ? (
+                <View style={styles.durationPill}>
+                  <Ionicons name="hourglass-outline" size={12} color={Palette.inkMuted} />
+                  <Text style={styles.durationText}>Đã đỗ {spotDurationStr}</Text>
+                </View>
+              ) : null}
             </View>
 
             {/* Dòng Hẹn giờ đỗ xe nếu có */}
@@ -278,11 +355,6 @@ export default function DashboardScreen({ navigation }) {
                     ? `🛑 ĐÃ HẾT GIỜ ĐỖ XE (${spotTimeRemainingStr})`
                     : `Hạn đỗ: ${spotTimeRemainingStr} (Hết lúc ${formatTimeOnly(spot.expiresAt)})`}
                 </Text>
-              </View>
-            ) : spotDurationStr ? (
-              <View style={styles.durationPill}>
-                <Ionicons name="hourglass-outline" size={12} color={Palette.inkMuted} />
-                <Text style={styles.durationText}>Đã đỗ {spotDurationStr}</Text>
               </View>
             ) : null}
 
@@ -413,7 +485,7 @@ export default function DashboardScreen({ navigation }) {
   }
 
   const mapCenter = currentSpot?.position
-    ? buildMapRegion(currentSpot.position.latitude, currentSpot.position.longitude, 0.005)
+    ? buildVisibleSpotRegion(currentSpot.position.latitude, currentSpot.position.longitude, 0.004)
     : coords
       ? buildMapRegion(coords.latitude, coords.longitude, 0.008)
       : APP_CONFIG.DEFAULT_CENTER;
@@ -428,6 +500,7 @@ export default function DashboardScreen({ navigation }) {
         region={mapCenter}
         showsUserLocation
         showsMyLocationButton={false}
+        mapPadding={{ top: insets.top + 70, bottom: 260, left: 16, right: 16 }}
       >
         {activeSpots.map((spot, idx) => {
           const isFocused = idx === activeSpotIndex;
@@ -492,16 +565,16 @@ export default function DashboardScreen({ navigation }) {
         </View>
 
         <Pressable
-          onPress={onRecenterMap}
+          onPress={onRecenterGPS}
           style={({ pressed }) => [
             styles.recenterPill,
             pressed && styles.recenterPressed,
           ]}
           accessibilityRole="button"
-          accessibilityLabel="Định vị lại bản đồ"
+          accessibilityLabel="Định vị GPS vị trí của bạn"
         >
           <Ionicons
-            name={activeSpots.length > 0 ? "car-outline" : "locate"}
+            name="locate"
             size={20}
             color={Palette.brand}
           />
@@ -521,36 +594,16 @@ export default function DashboardScreen({ navigation }) {
         pointerEvents="box-none"
       >
         {activeSpots.length > 1 ? (
-          <View style={styles.carouselHeaderTabs} pointerEvents="auto">
+          <View style={styles.carouselPaginationDots} pointerEvents="none">
             {activeSpots.map((s, idx) => (
-              <Pressable
+              <View
                 key={s.id}
-                onPress={() => onSelectSpotByIndex(idx)}
                 style={[
-                  styles.vehicleSwitcherTab,
-                  idx === activeSpotIndex && styles.vehicleSwitcherTabActive,
+                  styles.paginationDot,
+                  idx === activeSpotIndex && styles.paginationDotActive,
                 ]}
-              >
-                <Ionicons
-                  name={getVehicleIcon(s.vehicleType)}
-                  size={13}
-                  color={idx === activeSpotIndex ? Palette.brand : Palette.inkMuted}
-                />
-                <Text
-                  style={[
-                    styles.vehicleSwitcherTabText,
-                    idx === activeSpotIndex && styles.vehicleSwitcherTabTextActive,
-                  ]}
-                  numberOfLines={1}
-                >
-                  {s.vehicleName || `Xe ${idx + 1}`}
-                </Text>
-                {idx === activeSpotIndex ? <View style={styles.tabActiveDot} /> : null}
-              </Pressable>
+              />
             ))}
-            <View style={styles.swipeTipCluster}>
-              <Text style={styles.swipeTipText}>← Lướt xem xe khác →</Text>
-            </View>
           </View>
         ) : null}
 
@@ -696,59 +749,6 @@ const styles = StyleSheet.create({
     width: SCREEN_WIDTH,
     paddingHorizontal: 14,
   },
-  carouselHeaderTabs: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    marginBottom: 8,
-    gap: 8,
-  },
-  vehicleSwitcherTab: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(255, 255, 255, 0.95)",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: Metrics.radiusPill,
-    borderWidth: 1,
-    borderColor: Palette.outline,
-    gap: 5,
-    ...Elevation.flat,
-  },
-  vehicleSwitcherTabActive: {
-    backgroundColor: "#FFFFFF",
-    borderColor: Palette.brand,
-    borderWidth: 1.5,
-    ...Elevation.raised,
-  },
-  vehicleSwitcherTabText: {
-    fontSize: Metrics.fontXs,
-    fontWeight: "600",
-    color: Palette.inkMuted,
-    maxWidth: 95,
-  },
-  vehicleSwitcherTabTextActive: {
-    color: Palette.brandDark,
-    fontWeight: "800",
-  },
-  tabActiveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Palette.brand,
-  },
-  swipeTipCluster: {
-    marginLeft: "auto",
-  },
-  swipeTipText: {
-    fontSize: 10,
-    fontWeight: "600",
-    color: Palette.inkSubtle,
-    backgroundColor: "rgba(255, 255, 255, 0.88)",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: Metrics.radiusPill,
-  },
   topFloatingBar: {
     position: "absolute",
     left: 16,
@@ -849,12 +849,74 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  vehicleStatusCluster: {
+  cardHeaderLeftGroup: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 8,
+    flexShrink: 1,
+  },
+  deviceSwitcherBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.brandLight,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: Metrics.radiusPill,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: "rgba(37, 99, 235, 0.25)",
+  },
+  deviceSwitcherBtnPressed: {
+    backgroundColor: "rgba(37, 99, 235, 0.18)",
+  },
+  deviceSwitcherBtnText: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "700",
+    color: Palette.brand,
+  },
+  recenterSpotBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.cardSubtle,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: Metrics.radiusPill,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Palette.outline,
+  },
+  recenterSpotBtnPressed: {
+    backgroundColor: Palette.outlineLight,
+  },
+  recenterSpotBtnText: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "700",
+    color: Palette.brand,
+  },
+  vehicleSubHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     flexWrap: "wrap",
-    flex: 1,
+  },
+  carouselPaginationDots: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginBottom: 8,
+  },
+  paginationDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "rgba(100, 116, 139, 0.35)",
+  },
+  paginationDotActive: {
+    width: 16,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Palette.brand,
   },
   vehicleBadgePill: {
     flexDirection: "row",
