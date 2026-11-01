@@ -108,6 +108,11 @@ export default function CheckInScreen({ navigation }) {
   const [clockHourInput, setClockHourInput] = useState("22");
   const [clockMinInput, setClockMinInput] = useState("00");
 
+  // Điều khiển vị trí con trỏ nhập thời gian luôn ở cuối
+  const [minutesSelection, setMinutesSelection] = useState(undefined);
+  const [hourSelection, setHourSelection] = useState(undefined);
+  const [minSelection, setMinSelection] = useState(undefined);
+
   const [levelVal, setLevelVal] = useState("");
   const [sectorVal, setSectorVal] = useState("");
   const [bayVal, setBayVal] = useState("");
@@ -388,6 +393,25 @@ export default function CheckInScreen({ navigation }) {
       const parsed = parseInt(customMinutesInput, 10) || 60;
       setTimerMinutes(parsed);
     }
+  };
+
+  // Đặt con trỏ luôn ở cuối chuỗi khi chạm vào ô thời gian để người dùng chỉ cần bấm xóa hoặc nhập tiếp
+  const onFocusMinutes = () => {
+    setIsKeyboardActive(true);
+    const len = (customMinutesInput || "").length;
+    setMinutesSelection({ start: len, end: len });
+  };
+
+  const onFocusHour = () => {
+    setIsKeyboardActive(true);
+    const len = (clockHourInput || "").length;
+    setHourSelection({ start: len, end: len });
+  };
+
+  const onFocusMin = () => {
+    setIsKeyboardActive(true);
+    const len = (clockMinInput || "").length;
+    setMinSelection({ start: len, end: len });
   };
 
   const onSubmitCheckIn = async () => {
@@ -1002,13 +1026,16 @@ export default function CheckInScreen({ navigation }) {
                       <View style={styles.customInputCluster}>
                         <TextInput
                           style={styles.customMinutesInput}
-                          keyboardType="numeric"
+                          keyboardType="number-pad"
                           value={customMinutesInput}
                           onChangeText={onChangeCustomMinutes}
                           placeholder="90"
                           placeholderTextColor={Palette.inkSubtle}
                           maxLength={4}
                           returnKeyType="done"
+                          selection={minutesSelection}
+                          onFocus={onFocusMinutes}
+                          onSelectionChange={() => setMinutesSelection(undefined)}
                           onSubmitEditing={() => Keyboard.dismiss()}
                         />
                         <Text style={styles.customUnitText}>phút</Text>
@@ -1023,26 +1050,32 @@ export default function CheckInScreen({ navigation }) {
                       <View style={styles.clockFieldsGroup}>
                         <TextInput
                           style={styles.clockDigitInput}
-                          keyboardType="numeric"
+                          keyboardType="number-pad"
                           value={clockHourInput}
                           onChangeText={(text) => onUpdateClockTime(text.replace(/[^0-9]/g, "").slice(0, 2), clockMinInput)}
                           placeholder="22"
                           placeholderTextColor={Palette.inkSubtle}
                           maxLength={2}
                           returnKeyType="next"
+                          selection={hourSelection}
+                          onFocus={onFocusHour}
+                          onSelectionChange={() => setHourSelection(undefined)}
                           onSubmitEditing={() => clockMinInputRef.current?.focus()}
                         />
                         <Text style={styles.clockColon}>:</Text>
                         <TextInput
                           ref={clockMinInputRef}
                           style={styles.clockDigitInput}
-                          keyboardType="numeric"
+                          keyboardType="number-pad"
                           value={clockMinInput}
                           onChangeText={(text) => onUpdateClockTime(clockHourInput, text.replace(/[^0-9]/g, "").slice(0, 2))}
                           placeholder="00"
                           placeholderTextColor={Palette.inkSubtle}
                           maxLength={2}
                           returnKeyType="done"
+                          selection={minSelection}
+                          onFocus={onFocusMin}
+                          onSelectionChange={() => setMinSelection(undefined)}
                           onSubmitEditing={() => Keyboard.dismiss()}
                         />
                       </View>

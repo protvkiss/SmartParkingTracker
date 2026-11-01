@@ -480,11 +480,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+    flexWrap: "nowrap",
   },
   vehicleName: {
     fontSize: Metrics.fontBase,
     fontWeight: "700",
     color: Palette.inkHeading,
+    flexShrink: 1,
   },
   defaultPill: {
     backgroundColor: Palette.brandLight,

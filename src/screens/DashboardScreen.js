@@ -201,14 +201,15 @@ export default function DashboardScreen({ navigation }) {
     }
   };
 
-  // Chuyển sang phương tiện tiếp theo (khi có nhiều hơn 1 xe)
-  const onCycleNextVehicle = () => {
-    if (activeSpots.length <= 1) {
-      onCenterOnSpot(currentSpot);
-      return;
+  // Xử lý khi nhấn vào nút tên phương tiện riêng biệt:
+  // Nếu đang focus vào chính xe đó -> kéo map căn giữa xe đó trong vùng nhìn thấy!
+  // Nếu chọn xe khác -> cuộn carousel và chuyển focus sang xe đó + căn giữa map!
+  const onVehiclePillPress = (index, spot) => {
+    if (index === activeSpotIndex) {
+      onCenterOnSpot(spot);
+    } else {
+      onSelectSpotByIndex(index);
     }
-    const nextIndex = (activeSpotIndex + 1) % activeSpots.length;
-    onSelectSpotByIndex(nextIndex);
   };
 
   // Định vị GPS vị trí hiện tại của người dùng
@@ -244,44 +245,67 @@ export default function DashboardScreen({ navigation }) {
       <View key={spot.id} style={styles.cardPageWrapper}>
         <View style={styles.cardFrame}>
           <View style={styles.activeSpotContent}>
-            {/* Header của thẻ xe: Trạng thái & Nút chuyển/kéo về xe bên phải thẻ đang đỗ */}
+            {/* Header của thẻ xe: Trạng thái & Các nút tên từng phương tiện riêng biệt */}
             <View style={styles.cardHeaderRow}>
-              <View style={styles.cardHeaderLeftGroup}>
-                <StatusPill isOccupied />
+              <StatusPill isOccupied />
 
-                {/* Nút chuyển thiết bị hoặc kéo về vị trí xe đang đỗ */}
-                {activeSpots.length > 1 ? (
-                  <Pressable
-                    onPress={onCycleNextVehicle}
-                    style={({ pressed }) => [
-                      styles.deviceSwitcherBtn,
-                      pressed && styles.deviceSwitcherBtnPressed,
-                    ]}
-                    hitSlop={6}
-                    accessibilityRole="button"
-                    accessibilityLabel="Chuyển sang xe tiếp theo"
-                  >
-                    <Ionicons name="swap-horizontal" size={13} color={Palette.brand} />
-                    <Text style={styles.deviceSwitcherBtnText} numberOfLines={1}>
-                      Chuyển xe ({activeSpotIndex + 1}/{activeSpots.length})
-                    </Text>
-                    <Ionicons name="chevron-forward" size={12} color={Palette.brand} />
-                  </Pressable>
-                ) : (
-                  <Pressable
-                    onPress={() => onCenterOnSpot(spot)}
-                    style={({ pressed }) => [
-                      styles.recenterSpotBtn,
-                      pressed && styles.recenterSpotBtnPressed,
-                    ]}
-                    hitSlop={6}
-                    accessibilityRole="button"
-                    accessibilityLabel="Kéo bản đồ về vị trí xe đang đỗ"
-                  >
-                    <Ionicons name="locate" size={13} color={Palette.brand} />
-                    <Text style={styles.recenterSpotBtnText}>Về vị trí xe</Text>
-                  </Pressable>
-                )}
+              {/* Dải nút tên từng phương tiện riêng biệt (kéo ngang được, mờ 2 mép nếu tràn chữ) */}
+              <View style={styles.vehiclePillsScrollWrapper}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.vehiclePillsScrollContent}
+                  style={styles.vehiclePillsScrollView}
+                >
+                  {activeSpots.map((s, idx) => {
+                    const isThisFocused = idx === activeSpotIndex;
+                    return (
+                      <Pressable
+                        key={s.id}
+                        onPress={() => onVehiclePillPress(idx, s)}
+                        style={({ pressed }) => [
+                          styles.vehiclePillBtn,
+                          isThisFocused ? styles.vehiclePillBtnFocused : styles.vehiclePillBtnUnfocused,
+                          pressed && styles.vehiclePillBtnPressed,
+                        ]}
+                        hitSlop={4}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Phương tiện: ${s.vehicleName || "Xe"}`}
+                      >
+                        <Ionicons
+                          name={getVehicleIcon(s.vehicleType)}
+                          size={13}
+                          color={isThisFocused ? Palette.brandDark : Palette.inkMuted}
+                        />
+                        <Text
+                          style={[
+                            styles.vehiclePillBtnText,
+                            isThisFocused && styles.vehiclePillBtnTextFocused,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {s.vehicleName || `Xe ${idx + 1}`}
+                        </Text>
+                        {isThisFocused ? (
+                          <Ionicons
+                            name="locate"
+                            size={12}
+                            color={Palette.brandDark}
+                            style={styles.locateMiniIcon}
+                          />
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+
+                {/* Fade mờ nhẹ ở 2 bên giới hạn hiển thị nếu danh sách tràn sang phải */}
+                {activeSpots.length > 2 ? (
+                  <>
+                    <View style={styles.scrollFadeLeft} pointerEvents="none" />
+                    <View style={styles.scrollFadeRight} pointerEvents="none" />
+                  </>
+                ) : null}
               </View>
 
               <Pressable
@@ -295,18 +319,14 @@ export default function DashboardScreen({ navigation }) {
               </Pressable>
             </View>
 
-            {/* Dòng hiển thị Tên xe & thời gian đỗ */}
+            {/* Dòng thông tin phụ: Biển số & Thời gian đỗ */}
             <View style={styles.vehicleSubHeaderRow}>
-              <View style={styles.vehicleBadgePill}>
-                <Ionicons
-                  name={getVehicleIcon(spot.vehicleType)}
-                  size={12}
-                  color={Palette.brandDark}
-                />
-                <Text style={styles.vehicleBadgeText} numberOfLines={1}>
-                  {spot.vehicleName || "Phương tiện"}
-                </Text>
-              </View>
+              {spot.vehiclePlate ? (
+                <View style={styles.plateTagBadgeHeader}>
+                  <Ionicons name="card-outline" size={11} color={Palette.brandDark} />
+                  <Text style={styles.plateTagTextHeader}>{spot.vehiclePlate}</Text>
+                </View>
+              ) : null}
 
               {spotDurationStr && !spotTimeRemainingStr ? (
                 <View style={styles.durationPill}>
@@ -849,55 +869,93 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  cardHeaderLeftGroup: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    flexShrink: 1,
+  vehiclePillsScrollWrapper: {
+    flex: 1,
+    marginHorizontal: 8,
+    position: "relative",
+    justifyContent: "center",
   },
-  deviceSwitcherBtn: {
+  vehiclePillsScrollView: {
+    flexGrow: 0,
+  },
+  vehiclePillsScrollContent: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 2,
+  },
+  vehiclePillBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: Metrics.radiusPill,
+    gap: 4,
+    borderWidth: 1,
+  },
+  vehiclePillBtnFocused: {
     backgroundColor: Palette.brandLight,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: Metrics.radiusPill,
-    gap: 4,
-    borderWidth: 1,
-    borderColor: "rgba(37, 99, 235, 0.25)",
+    borderColor: Palette.brand,
+    ...Elevation.flat,
   },
-  deviceSwitcherBtnPressed: {
-    backgroundColor: "rgba(37, 99, 235, 0.18)",
-  },
-  deviceSwitcherBtnText: {
-    fontSize: Metrics.fontXs,
-    fontWeight: "700",
-    color: Palette.brand,
-  },
-  recenterSpotBtn: {
-    flexDirection: "row",
-    alignItems: "center",
+  vehiclePillBtnUnfocused: {
     backgroundColor: Palette.cardSubtle,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: Metrics.radiusPill,
-    gap: 4,
-    borderWidth: 1,
     borderColor: Palette.outline,
+    opacity: 0.88,
   },
-  recenterSpotBtnPressed: {
-    backgroundColor: Palette.outlineLight,
+  vehiclePillBtnPressed: {
+    opacity: 0.7,
   },
-  recenterSpotBtnText: {
+  vehiclePillBtnText: {
     fontSize: Metrics.fontXs,
-    fontWeight: "700",
-    color: Palette.brand,
+    fontWeight: "600",
+    color: Palette.inkMuted,
+    maxWidth: 105,
+  },
+  vehiclePillBtnTextFocused: {
+    color: Palette.brandDark,
+    fontWeight: "800",
+  },
+  locateMiniIcon: {
+    marginLeft: 1,
+  },
+  scrollFadeLeft: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 10,
+    backgroundColor: "rgba(255, 255, 255, 0.75)",
+  },
+  scrollFadeRight: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: 14,
+    backgroundColor: "rgba(255, 255, 255, 0.8)",
   },
   vehicleSubHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     flexWrap: "wrap",
+  },
+  plateTagBadgeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.cardSubtle,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: Metrics.radiusPill,
+    borderWidth: 1,
+    borderColor: Palette.outline,
+    gap: 4,
+  },
+  plateTagTextHeader: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "700",
+    color: Palette.inkHeading,
   },
   carouselPaginationDots: {
     flexDirection: "row",

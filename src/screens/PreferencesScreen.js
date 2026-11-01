@@ -177,18 +177,26 @@ function SettingRow({
 }) {
   const content = (
     <View style={[styles.settingRow, !noBorder && styles.settingRowBorder]}>
-      <View style={styles.settingLeft}>
-        <View style={[styles.iconBox, { backgroundColor: iconBg }]}>
-          <Ionicons name={icon} size={18} color={iconColor} />
-        </View>
-        <Text style={styles.settingLabel}>{label}</Text>
+      <View style={[styles.iconBox, { backgroundColor: iconBg }]}>
+        <Ionicons name={icon} size={18} color={iconColor} />
       </View>
-      <View style={styles.settingRightCol}>
-        <Text style={styles.settingVal} numberOfLines={1}>{val}</Text>
-        {hasArrow ? (
-          <Ionicons name="chevron-forward" size={16} color={Palette.inkMuted} />
+
+      <View style={styles.settingTextCol}>
+        <Text style={styles.settingLabel} numberOfLines={1}>
+          {label}
+        </Text>
+        {val ? (
+          <Text style={styles.settingValSub} numberOfLines={2}>
+            {val}
+          </Text>
         ) : null}
       </View>
+
+      {hasArrow ? (
+        <View style={styles.settingArrowBox}>
+          <Ionicons name="chevron-forward" size={18} color={Palette.inkMuted} />
+        </View>
+      ) : null}
     </View>
   );
 
@@ -255,9 +263,10 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Palette.card,
     borderRadius: Metrics.radiusMd,
-    paddingVertical: 14,
-    paddingHorizontal: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 6,
     alignItems: "center",
+    justifyContent: "center",
     borderWidth: 1,
     borderColor: Palette.outline,
     gap: 4,
@@ -268,9 +277,10 @@ const styles = StyleSheet.create({
     borderColor: "rgba(37, 99, 235, 0.3)",
   },
   metricNum: {
-    fontSize: Metrics.font2Xl,
+    fontSize: Metrics.fontXl,
     fontWeight: "900",
     color: Palette.inkHeading,
+    lineHeight: 28,
   },
   metricNumActive: {
     color: Palette.brandDark,
@@ -281,6 +291,7 @@ const styles = StyleSheet.create({
     color: Palette.inkMuted,
     letterSpacing: 0.5,
     textAlign: "center",
+    lineHeight: 12,
   },
   metricLabelActive: {
     color: Palette.brandDark,
@@ -306,42 +317,41 @@ const styles = StyleSheet.create({
   settingRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     paddingVertical: 12,
+    gap: 12,
   },
   settingRowBorder: {
     borderBottomWidth: 1,
     borderBottomColor: Palette.separator,
   },
-  settingLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    flex: 1,
-  },
-  settingRightCol: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    maxWidth: "50%",
-    justifyContent: "flex-end",
-  },
   iconBox: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
+    width: 36,
+    height: 36,
+    borderRadius: 10,
     alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  settingTextCol: {
+    flex: 1,
+    gap: 2,
     justifyContent: "center",
   },
   settingLabel: {
-    fontSize: Metrics.fontSm + 0.5,
-    fontWeight: "600",
+    fontSize: Metrics.fontBase,
+    fontWeight: "700",
     color: Palette.inkHeading,
+    lineHeight: 20,
   },
-  settingVal: {
-    fontSize: Metrics.fontSm,
+  settingValSub: {
+    fontSize: Metrics.fontXs + 0.5,
     color: Palette.inkMuted,
     fontWeight: "500",
+    lineHeight: 16,
+  },
+  settingArrowBox: {
+    flexShrink: 0,
+    marginLeft: 4,
   },
   wipeBtn: {
     marginTop: 4,
