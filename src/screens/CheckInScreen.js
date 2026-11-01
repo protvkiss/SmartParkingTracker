@@ -17,6 +17,7 @@ import {
 import MapView, { Marker } from "react-native-maps";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
+import { Audio } from "expo-av";
 import { Ionicons } from "@expo/vector-icons";
 
 import ActionButton from "~/components/ActionButton";
@@ -65,6 +66,13 @@ function calculateMinutesFromClockTime(hourStr, minStr) {
   return Math.max(1, Math.round(diffMs / 60000));
 }
 
+function formatSecs(secs) {
+  if (!secs || isNaN(secs)) return "00:00";
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m < 10 ? "0" : ""}${m}:${s < 10 ? "0" : ""}${s}`;
+}
+
 export default function CheckInScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const { checkInSpot, vehicles, defaultVehicle, activeSpots = [] } = useParkingStore();
@@ -102,6 +110,25 @@ export default function CheckInScreen({ navigation }) {
 
   const [photoUri, setPhotoUri] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Ghi âm chỉ dẫn vị trí
+  const [recording, setRecording] = useState(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordDuration, setRecordDuration] = useState(0);
+  const [voiceUri, setVoiceUri] = useState(null);
+  const [voiceDuration, setVoiceDuration] = useState(null);
+  const [isPlayingVoice, setIsPlayingVoice] = useState(false);
+  const soundRef = useRef(null);
+  const recordTimerRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+      if (soundRef.current) {
+        soundRef.current.unloadAsync().catch(() => {});
+      }
+    };
+  }, []);
 
   // Trạng thái hiển thị bàn phím & refs chuyển focus
   const [isKeyboardActive, setIsKeyboardActive] = useState(false);
@@ -215,6 +242,114 @@ export default function CheckInScreen({ navigation }) {
     }
   };
 
+  const onStartRecordAudio = async () => {
+    try {
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert(
+          "Quyền Microphone",
+          "Vui lòng cấp quyền micro trong cài đặt điện thoại để sử dụng tính năng ghi âm chỉ dẫn vị trí.",
+        );
+        return;
+      }
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+
+      const { recording: newRecording } = await Audio.Recording.createAsync(
+        Audio.RecordingOptionsPresets.HIGH_QUALITY,
+      );
+
+      setRecording(newRecording);
+      setIsRecording(true);
+      setRecordDuration(0);
+
+      recordTimerRef.current = setInterval(() => {
+        setRecordDuration((prev) => prev + 1);
+      }, 1000);
+    } catch (err) {
+      console.warn("Lỗi bắt đầu ghi âm:", err);
+      Alert.alert("Lỗi", "Không thể bắt đầu ghi âm.");
+    }
+  };
+
+  const onStopRecordAudio = async () => {
+    if (!recording) return;
+    try {
+      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+      setIsRecording(false);
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      setVoiceUri(uri);
+      setVoiceDuration(recordDuration);
+      setRecording(null);
+
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+      });
+    } catch (err) {
+      console.warn("Lỗi dừng ghi âm:", err);
+    }
+  };
+
+  const onCancelRecordAudio = async () => {
+    if (!recording) return;
+    try {
+      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+      setIsRecording(false);
+      await recording.stopAndUnloadAsync();
+      setRecording(null);
+      setRecordDuration(0);
+    } catch (err) {
+      console.warn("Lỗi hủy ghi âm:", err);
+    }
+  };
+
+  const onDeleteVoiceNote = async () => {
+    if (soundRef.current) {
+      try {
+        await soundRef.current.unloadAsync();
+        soundRef.current = null;
+      } catch (e) {}
+    }
+    setVoiceUri(null);
+    setVoiceDuration(null);
+    setIsPlayingVoice(false);
+  };
+
+  const onTogglePlayVoicePreview = async () => {
+    if (!voiceUri) return;
+    try {
+      if (soundRef.current) {
+        if (isPlayingVoice) {
+          await soundRef.current.pauseAsync();
+          setIsPlayingVoice(false);
+        } else {
+          await soundRef.current.playAsync();
+          setIsPlayingVoice(true);
+        }
+      } else {
+        const { sound } = await Audio.Sound.createAsync(
+          { uri: voiceUri },
+          { shouldPlay: true },
+          (status) => {
+            if (status.isLoaded && status.didJustFinish) {
+              setIsPlayingVoice(false);
+              sound.setPositionAsync(0);
+            }
+          },
+        );
+        soundRef.current = sound;
+        setIsPlayingVoice(true);
+      }
+    } catch (err) {
+      console.warn("Lỗi phát âm thanh:", err);
+    }
+  };
+
   const onAppendQuickNote = (noteText) => {
     setMemoVal((prev) => {
       if (!prev) return noteText;
@@ -286,6 +421,8 @@ export default function CheckInScreen({ navigation }) {
         bayNumber: bayVal,
         memo: memoVal,
         snapshotUri: permanentPhoto,
+        voiceNoteUri: voiceUri,
+        voiceDurationSecs: voiceDuration,
         vehicle: selectedVehicle,
         timerMinutes: isTimerEnabled ? timerMinutes : null,
       });
@@ -504,6 +641,118 @@ export default function CheckInScreen({ navigation }) {
               placeholderTextColor={Palette.inkSubtle}
               multiline
             />
+          </View>
+
+          {/* Card Ghi âm chỉ dẫn vị trí (nằm dưới Địa chỉ và trên Chi tiết tầng/ô) */}
+          <View style={styles.cardSection}>
+            <View style={styles.sectionHeaderRow}>
+              <View style={[styles.sectionIconBadge, { backgroundColor: "rgba(239, 68, 68, 0.12)" }]}>
+                <Ionicons name="mic" size={15} color={Palette.danger} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sectionTitle}>Ghi âm giọng nói chỉ dẫn</Text>
+                <Text style={styles.sectionSubtitle}>Thu âm ghi nhớ cột mốc, cửa ra vào, hướng đi...</Text>
+              </View>
+            </View>
+
+            {isRecording ? (
+              // Trạng thái đang ghi âm
+              <View style={styles.recordingActiveBox}>
+                <View style={styles.recordingPulseRow}>
+                  <View style={styles.recordingRedDot} />
+                  <Text style={styles.recordingActiveLabel}>Đang ghi âm giọng nói...</Text>
+                  <Text style={styles.recordingTimerText}>{formatSecs(recordDuration)}</Text>
+                </View>
+
+                <View style={styles.recordingActionsRow}>
+                  <Pressable
+                    onPress={onCancelRecordAudio}
+                    style={({ pressed }) => [
+                      styles.cancelRecordBtn,
+                      pressed && { opacity: 0.8 },
+                    ]}
+                  >
+                    <Ionicons name="close" size={16} color={Palette.inkMuted} />
+                    <Text style={styles.cancelRecordText}>Hủy</Text>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={onStopRecordAudio}
+                    style={({ pressed }) => [
+                      styles.stopRecordBtn,
+                      pressed && { opacity: 0.9 },
+                    ]}
+                  >
+                    <Ionicons name="stop" size={16} color="#FFFFFF" />
+                    <Text style={styles.stopRecordText}>Hoàn tất</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : voiceUri ? (
+              // Trạng thái đã có bản ghi âm
+              <View style={styles.voiceRecordedBox}>
+                <Pressable
+                  onPress={onTogglePlayVoicePreview}
+                  style={({ pressed }) => [
+                    styles.voicePreviewPlayBtn,
+                    isPlayingVoice && styles.voicePreviewPlayBtnActive,
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  <Ionicons
+                    name={isPlayingVoice ? "pause" : "play"}
+                    size={20}
+                    color="#FFFFFF"
+                  />
+                </Pressable>
+
+                <View style={styles.voicePreviewInfo}>
+                  <View style={styles.voiceWaveRow}>
+                    <Ionicons
+                      name="volume-medium"
+                      size={17}
+                      color={isPlayingVoice ? Palette.brand : Palette.inkMuted}
+                    />
+                    <Text style={styles.voiceDurationLabel}>
+                      Bản ghi: {formatSecs(voiceDuration || 0)}
+                    </Text>
+                  </View>
+                  <Text style={styles.voicePreviewHint}>
+                    {isPlayingVoice ? "Đang phát lại..." : "Chạm nút để nghe lại"}
+                  </Text>
+                </View>
+
+                <Pressable
+                  onPress={onDeleteVoiceNote}
+                  style={({ pressed }) => [
+                    styles.deleteVoiceBtn,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                  hitSlop={8}
+                >
+                  <Ionicons name="trash-outline" size={18} color={Palette.danger} />
+                </Pressable>
+              </View>
+            ) : (
+              // Trạng thái sẵn sàng ghi âm
+              <Pressable
+                onPress={onStartRecordAudio}
+                style={({ pressed }) => [
+                  styles.startRecordPrompt,
+                  pressed && styles.startRecordPromptPressed,
+                ]}
+              >
+                <View style={styles.micCircleIcon}>
+                  <Ionicons name="mic-outline" size={24} color={Palette.danger} />
+                </View>
+                <View style={styles.startRecordTexts}>
+                  <Text style={styles.startRecordTitle}>Nhấn để bắt đầu thu âm</Text>
+                  <Text style={styles.startRecordSub}>
+                    Ghi lại giọng nói (vd: "Xe đỗ cạnh thang máy số 3...")
+                  </Text>
+                </View>
+              </Pressable>
+            )}
           </View>
 
           {/* Card 4: Thông tin ô đỗ (Tầng, Khu, Số ô) */}
@@ -1773,5 +2022,153 @@ const styles = StyleSheet.create({
     fontSize: Metrics.fontXs,
     color: Palette.inkMuted,
     flex: 1,
+  },
+  // Ghi âm styles
+  startRecordPrompt: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.cardSubtle,
+    padding: 14,
+    borderRadius: Metrics.radiusMd,
+    borderWidth: 1.5,
+    borderColor: "rgba(239, 68, 68, 0.3)",
+    borderStyle: "dashed",
+    gap: 12,
+  },
+  startRecordPromptPressed: {
+    backgroundColor: "rgba(239, 68, 68, 0.06)",
+  },
+  micCircleIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(239, 68, 68, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  startRecordTexts: {
+    flex: 1,
+    gap: 3,
+  },
+  startRecordTitle: {
+    fontSize: Metrics.fontSm,
+    fontWeight: "700",
+    color: Palette.inkHeading,
+  },
+  startRecordSub: {
+    fontSize: Metrics.fontXs,
+    color: Palette.inkMuted,
+  },
+  recordingActiveBox: {
+    backgroundColor: "rgba(239, 68, 68, 0.06)",
+    borderRadius: Metrics.radiusMd,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.3)",
+    gap: 12,
+  },
+  recordingPulseRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  recordingRedDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: Palette.danger,
+  },
+  recordingActiveLabel: {
+    flex: 1,
+    fontSize: Metrics.fontSm,
+    fontWeight: "700",
+    color: Palette.danger,
+  },
+  recordingTimerText: {
+    fontSize: Metrics.fontBase,
+    fontWeight: "800",
+    color: Palette.inkHeading,
+  },
+  recordingActionsRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  cancelRecordBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Palette.card,
+    paddingVertical: 9,
+    borderRadius: Metrics.radiusSm,
+    borderWidth: 1,
+    borderColor: Palette.outline,
+    gap: 4,
+  },
+  cancelRecordText: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "600",
+    color: Palette.inkMuted,
+  },
+  stopRecordBtn: {
+    flex: 1.5,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Palette.danger,
+    paddingVertical: 9,
+    borderRadius: Metrics.radiusSm,
+    gap: 6,
+    ...Elevation.flat,
+  },
+  stopRecordText: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "700",
+    color: "#FFFFFF",
+  },
+  voiceRecordedBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.cardSubtle,
+    borderRadius: Metrics.radiusMd,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: Palette.outline,
+    gap: 12,
+  },
+  voicePreviewPlayBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: Palette.brand,
+    alignItems: "center",
+    justifyContent: "center",
+    ...Elevation.flat,
+  },
+  voicePreviewPlayBtnActive: {
+    backgroundColor: Palette.danger,
+  },
+  voicePreviewInfo: {
+    flex: 1,
+    gap: 3,
+  },
+  voiceWaveRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  voiceDurationLabel: {
+    fontSize: Metrics.fontSm,
+    fontWeight: "700",
+    color: Palette.inkHeading,
+  },
+  voicePreviewHint: {
+    fontSize: Metrics.fontXs,
+    color: Palette.inkMuted,
+  },
+  deleteVoiceBtn: {
+    padding: 8,
+    borderRadius: Metrics.radiusSm,
+    backgroundColor: "rgba(239, 68, 68, 0.08)",
   },
 });

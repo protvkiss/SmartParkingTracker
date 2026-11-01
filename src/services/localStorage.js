@@ -5,15 +5,9 @@ import { evictSnapshot } from "./photoVault";
 export function sanitizeSessions(rawItems) {
   if (!Array.isArray(rawItems)) return [];
 
-  let occupiedEncountered = false;
-
   return rawItems.map((item, idx) => {
     const isTargetOccupied = item.state === "OCCUPIED" || (!item.state && idx === 0);
-    const resolvedState = isTargetOccupied && !occupiedEncountered ? "OCCUPIED" : "VACATED";
-
-    if (resolvedState === "OCCUPIED") {
-      occupiedEncountered = true;
-    }
+    const resolvedState = isTargetOccupied ? "OCCUPIED" : "VACATED";
 
     return {
       id: item.id || `rec_${Date.now()}_${idx}`,
@@ -27,12 +21,14 @@ export function sanitizeSessions(rawItems) {
       bayNumber: item.bayNumber ? String(item.bayNumber).trim() : (item.slotNumber ? String(item.slotNumber).trim() : ""),
       memo: item.memo ? String(item.memo).trim() : (item.note ? String(item.note).trim() : ""),
       snapshotUri: item.snapshotUri || item.imageUri || null,
+      voiceNoteUri: item.voiceNoteUri || item.audioUri || null,
+      voiceDurationSecs: typeof item.voiceDurationSecs === "number" ? item.voiceDurationSecs : null,
       state: resolvedState,
       parkedAt: item.parkedAt || item.savedAt || new Date().toISOString(),
       vacatedAt: resolvedState === "OCCUPIED" ? null : (item.vacatedAt || item.retrievedAt || null),
       // Trường mới cho phương tiện
       vehicleId: item.vehicleId || null,
-      vehicleName: item.vehicleName || "Phương tiện của tôi",
+      vehicleName: item.vehicleName || "Phương tiện",
       vehicleType: item.vehicleType || "car",
       vehiclePlate: item.vehiclePlate || "",
       // Trường mới cho hẹn giờ

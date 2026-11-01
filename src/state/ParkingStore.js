@@ -174,7 +174,7 @@ export function ParkingStoreProvider({ children }) {
     [state.vehicles, updateStoreVehicles],
   );
 
-  // LƯU VỊ TRÍ ĐỖ XE KÈM PHƯƠNG TIỆN & HẸN GIỜ
+  // LƯU VỊ TRÍ ĐỖ XE KÈM PHƯƠNG TIỆN, GHI ÂM & HẸN GIỜ
   const checkInSpot = useCallback(
     async ({
       latitude,
@@ -185,6 +185,8 @@ export function ParkingStoreProvider({ children }) {
       bayNumber,
       memo,
       snapshotUri,
+      voiceNoteUri = null,
+      voiceDurationSecs = null,
       vehicle = null,
       timerMinutes = null,
     }) => {
@@ -215,6 +217,8 @@ export function ParkingStoreProvider({ children }) {
         bayNumber: bayNumber?.trim() || "",
         memo: memo?.trim() || "",
         snapshotUri: snapshotUri || null,
+        voiceNoteUri: voiceNoteUri || null,
+        voiceDurationSecs: voiceDurationSecs || null,
         state: "OCCUPIED",
         parkedAt: nowIso,
         vacatedAt: null,

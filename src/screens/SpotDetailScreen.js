@@ -1,7 +1,8 @@
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import MapView, { Marker } from "react-native-maps";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { Audio } from "expo-av";
 import { Ionicons } from "@expo/vector-icons";
 
 import ActionButton from "~/components/ActionButton";
@@ -16,6 +17,13 @@ import { useParkingStore } from "~/state/ParkingStore";
 import { computeSurfaceDistance, formatMetricDistance } from "~/utils/geoMath";
 import { formatFullDateTime, formatParkingDuration, formatTimeOnly, formatTimeRemaining } from "~/utils/timeAgo";
 
+function formatDuration(secs) {
+  if (!secs || isNaN(secs)) return "00:00";
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m < 10 ? "0" : ""}${m}:${s < 10 ? "0" : ""}${s}`;
+}
+
 export default function SpotDetailScreen({ route, navigation }) {
   const insets = useSafeAreaInsets();
   const { recordId } = route.params;
@@ -24,7 +32,61 @@ export default function SpotDetailScreen({ route, navigation }) {
   const { coords } = useLiveLocation();
 
   const record = sessionLogs.find((r) => r.id === recordId);
-  const isOccupied = activeSpot?.id === record?.id;
+  const isOccupied = record?.state === "OCCUPIED";
+
+  // Trạng thái phát lại ghi âm chỉ dẫn
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackSecs, setPlaybackSecs] = useState(0);
+  const soundInstanceRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (soundInstanceRef.current) {
+        soundInstanceRef.current.unloadAsync().catch(() => {});
+      }
+    };
+  }, []);
+
+  const onTogglePlaySound = async () => {
+    if (!record?.voiceNoteUri) return;
+
+    try {
+      if (soundInstanceRef.current) {
+        if (isPlaying) {
+          await soundInstanceRef.current.pauseAsync();
+          setIsPlaying(false);
+        } else {
+          await soundInstanceRef.current.playAsync();
+          setIsPlaying(true);
+        }
+      } else {
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          playsInSilentModeIOS: true,
+        });
+
+        const { sound } = await Audio.Sound.createAsync(
+          { uri: record.voiceNoteUri },
+          { shouldPlay: true },
+          (status) => {
+            if (status.isLoaded) {
+              setPlaybackSecs(Math.floor((status.positionMillis || 0) / 1000));
+              if (status.didJustFinish) {
+                setIsPlaying(false);
+                setPlaybackSecs(0);
+                sound.setPositionAsync(0);
+              }
+            }
+          },
+        );
+        soundInstanceRef.current = sound;
+        setIsPlaying(true);
+      }
+    } catch (err) {
+      console.warn("Lỗi phát ghi âm:", err);
+      Alert.alert("Lỗi", "Không thể phát bản ghi âm.");
+    }
+  };
 
   if (!record) {
     return (
@@ -228,6 +290,57 @@ export default function SpotDetailScreen({ route, navigation }) {
             noBorder
           />
         </View>
+
+        {/* Nút Play nghe ghi âm chỉ dẫn vị trí (giữa Phương tiện đỗ và Thời gian đỗ xe) */}
+        {record.voiceNoteUri ? (
+          <View style={styles.voiceNoteCard}>
+            <View style={styles.cardTitleRow}>
+              <Ionicons name="mic-outline" size={16} color={Palette.danger} />
+              <Text style={styles.cardTitle}>Ghi âm giọng nói chỉ dẫn</Text>
+              {record.voiceDurationSecs ? (
+                <View style={styles.voiceDurationBadge}>
+                  <Text style={styles.voiceDurationBadgeText}>
+                    {formatDuration(record.voiceDurationSecs)}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+
+            <View style={styles.audioPlayerBox}>
+              <Pressable
+                onPress={onTogglePlaySound}
+                style={({ pressed }) => [
+                  styles.audioPlayBtn,
+                  isPlaying && styles.audioPlayBtnActive,
+                  pressed && { opacity: 0.8 },
+                ]}
+              >
+                <Ionicons
+                  name={isPlaying ? "pause" : "play"}
+                  size={22}
+                  color="#FFFFFF"
+                />
+              </Pressable>
+
+              <View style={styles.audioTrackContent}>
+                <View style={styles.audioWaveRow}>
+                  <Ionicons
+                    name="volume-medium"
+                    size={18}
+                    color={isPlaying ? Palette.brand : Palette.inkMuted}
+                  />
+                  <Text style={styles.audioProgressText}>
+                    {isPlaying ? `${formatDuration(playbackSecs)} / ` : ""}
+                    {formatDuration(record.voiceDurationSecs || 0)}
+                  </Text>
+                </View>
+                <Text style={styles.audioHintText}>
+                  {isPlaying ? "Đang phát ghi âm chỉ dẫn..." : "Chạm nút Play để nghe lại chỉ dẫn giọng nói"}
+                </Text>
+              </View>
+            </View>
+          </View>
+        ) : null}
 
         {/* Thông tin Hạn đỗ xe nếu có */}
         {record.expiresAt ? (
@@ -460,6 +573,67 @@ const styles = StyleSheet.create({
     borderColor: Palette.outline,
     gap: 10,
     ...Elevation.flat,
+  },
+  voiceNoteCard: {
+    backgroundColor: Palette.card,
+    borderRadius: Metrics.radiusMd,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: Palette.outline,
+    gap: 12,
+    ...Elevation.flat,
+  },
+  voiceDurationBadge: {
+    marginLeft: "auto",
+    backgroundColor: "rgba(239, 68, 68, 0.1)",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: Metrics.radiusPill,
+  },
+  voiceDurationBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: Palette.danger,
+  },
+  audioPlayerBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.cardSubtle,
+    borderRadius: Metrics.radiusSm,
+    padding: 10,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: Palette.outline,
+  },
+  audioPlayBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: Palette.brand,
+    alignItems: "center",
+    justifyContent: "center",
+    ...Elevation.flat,
+  },
+  audioPlayBtnActive: {
+    backgroundColor: Palette.danger,
+  },
+  audioTrackContent: {
+    flex: 1,
+    gap: 2,
+  },
+  audioWaveRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  audioProgressText: {
+    fontSize: Metrics.fontSm,
+    fontWeight: "700",
+    color: Palette.inkHeading,
+  },
+  audioHintText: {
+    fontSize: Metrics.fontXs,
+    color: Palette.inkMuted,
   },
   snapshotImg: {
     width: "100%",
