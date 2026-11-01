@@ -1,73 +1,147 @@
-import React, { useRef } from "react";
-import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  Dimensions,
+  FlatList,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import MapView, { Marker } from "react-native-maps";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 
 import ActionButton from "~/components/ActionButton";
 import AppSpinner from "~/components/AppSpinner";
-import SpotRecordCard from "~/components/SpotRecordCard";
+import StatusPill from "~/components/StatusPill";
 import { APP_CONFIG } from "~/core/config";
 import { Elevation, Metrics, Palette } from "~/core/theme";
 import { useLiveLocation } from "~/hooks/useLiveLocation";
 import { shareSpotDetails } from "~/services/contentSharer";
 import { buildMapRegion, launchExternalDirections } from "~/services/mapLauncher";
 import { useParkingStore } from "~/state/ParkingStore";
+import {
+  formatParkingDuration,
+  formatTimeOnly,
+  formatTimeRemaining,
+  getTimerAlertTier,
+} from "~/utils/timeAgo";
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+
+/**
+ * Tính toán tọa độ tâm bản đồ để điểm đánh dấu xe nằm ngay chính giữa
+ * phần màn hình nhìn thấy được (không bị che bởi thẻ thông tin phía dưới).
+ */
+function buildVisibleSpotRegion(latitude, longitude, span = 0.004) {
+  // Dịch tâm camera xuống phía Nam để điểm đỗ xe nằm ngay trung tâm phần màn hình nhìn thấy được phía trên thẻ
+  const latitudeOffset = span * 0.22;
+  return {
+    latitude: (Number(latitude) || 0) - latitudeOffset,
+    longitude: Number(longitude) || 0,
+    latitudeDelta: Math.max(span, 0.001),
+    longitudeDelta: Math.max(span, 0.001),
+  };
+}
 
 export default function DashboardScreen({ navigation }) {
-  const { activeSpot, vacateCurrentSpot, isLoading } = useParkingStore();
-  const { coords, busy: locating, errorMessage: gpsError } = useLiveLocation();
+  const insets = useSafeAreaInsets();
+  const { activeSpots = [], vacateCurrentSpot, isLoading } = useParkingStore();
+  const { coords, busy: locating, errorMessage: gpsError, refreshLocation } = useLiveLocation();
   const mapElement = useRef(null);
+  const carouselRef = useRef(null);
 
-  const onOpenDirections = () => {
-    if (!activeSpot?.position) return;
+  // Chỉ số thẻ xe đang được chọn hiển thị / căn giữa trên bản đồ
+  const [activeSpotIndex, setActiveSpotIndex] = useState(0);
+
+  // Bộ đếm nhịp để cập nhật thời gian đếm ngược thời gian thực
+  const [, setTimerTick] = useState(0);
+
+  useEffect(() => {
+    const hasExpiry = activeSpots.some((s) => s.expiresAt);
+    if (!hasExpiry) return;
+    const interval = setInterval(() => {
+      setTimerTick((t) => t + 1);
+    }, 10000); // cập nhật mỗi 10 giây
+    return () => clearInterval(interval);
+  }, [activeSpots]);
+
+  // Đảm bảo activeSpotIndex luôn hợp lệ khi danh sách xe thay đổi
+  useEffect(() => {
+    if (activeSpotIndex >= activeSpots.length && activeSpots.length > 0) {
+      setActiveSpotIndex(activeSpots.length - 1);
+    }
+  }, [activeSpots.length, activeSpotIndex]);
+
+  const currentSpot = activeSpots[activeSpotIndex] || activeSpots[0] || null;
+
+  // Tự động căn giữa bản đồ vào vị trí phương tiện đang được chọn (không bị che bởi thẻ)
+  useEffect(() => {
+    if (currentSpot?.position && mapElement.current) {
+      mapElement.current.animateToRegion(
+        buildVisibleSpotRegion(
+          currentSpot.position.latitude,
+          currentSpot.position.longitude,
+          0.004,
+        ),
+        450,
+      );
+    } else if (coords && mapElement.current) {
+      mapElement.current.animateToRegion(
+        buildMapRegion(coords.latitude, coords.longitude, 0.008),
+        450,
+      );
+    }
+  }, [
+    currentSpot?.id,
+    currentSpot?.position?.latitude,
+    currentSpot?.position?.longitude,
+  ]);
+
+  const onOpenDirections = (spot) => {
+    const target = spot || currentSpot;
+    if (!target?.position) return;
     launchExternalDirections(
-      activeSpot.position.latitude,
-      activeSpot.position.longitude,
-      activeSpot.locationName,
+      target.position.latitude,
+      target.position.longitude,
+      target.locationName,
     );
   };
 
-  const onShareLocation = async () => {
-    if (!activeSpot) return;
+  const onShareLocation = async (spot) => {
+    const target = spot || currentSpot;
+    if (!target) return;
     try {
-      await shareSpotDetails(activeSpot);
+      await shareSpotDetails(target);
     } catch (e) {
       Alert.alert("Thông báo", "Không mở được menu chia sẻ.");
     }
   };
 
   const onTriggerCheckIn = () => {
-    if (!activeSpot) {
-      navigation.navigate("CheckIn");
-      return;
-    }
+    navigation.navigate("CheckIn");
+  };
 
+  const onInspectDetail = (spotId) => {
+    const targetId = spotId || currentSpot?.id;
+    if (!targetId) return;
+    navigation.navigate("SpotDetail", { recordId: targetId });
+  };
+
+  const onOpenRadar = (spotId) => {
+    const targetId = spotId || currentSpot?.id;
+    if (!targetId) return;
+    navigation.navigate("Radar", { recordId: targetId });
+  };
+
+  const onConfirmVacateSpot = (spot) => {
+    const target = spot || currentSpot;
+    if (!target) return;
     Alert.alert(
-      "Đã có xe đang đỗ",
-      "Nếu bạn lưu vị trí mới, phiên đỗ hiện tại sẽ được chuyển vào lịch sử.",
-      [
-        { text: "Bỏ qua", style: "cancel" },
-        { text: "Tiếp tục", onPress: () => navigation.navigate("CheckIn") },
-      ],
-    );
-  };
-
-  const onInspectDetail = () => {
-    if (!activeSpot) return;
-    navigation.navigate("SpotDetail", { recordId: activeSpot.id });
-  };
-
-  const onOpenRadar = () => {
-    if (!activeSpot) return;
-    navigation.navigate("Radar", { recordId: activeSpot.id });
-  };
-
-  const onConfirmVacate = () => {
-    if (!activeSpot) return;
-    Alert.alert(
-      "Xác nhận đã lấy xe?",
-      "Vị trí này sẽ được chuyển vào mục lịch sử đỗ xe.",
+      `Xác nhận đã lấy ${target.vehicleName || "xe"}?`,
+      `Phiên đỗ của ${target.vehicleName || "xe này"} sẽ được chuyển vào mục lịch sử đỗ xe và các cảnh báo hẹn giờ sẽ dừng.`,
       [
         { text: "Để sau", style: "cancel" },
         {
@@ -75,7 +149,7 @@ export default function DashboardScreen({ navigation }) {
           style: "default",
           onPress: async () => {
             try {
-              await vacateCurrentSpot(activeSpot.id);
+              await vacateCurrentSpot(target.id);
             } catch (err) {
               Alert.alert("Lỗi", "Không cập nhật được trạng thái.");
             }
@@ -85,193 +159,1070 @@ export default function DashboardScreen({ navigation }) {
     );
   };
 
-  if (isLoading || locating) {
-    return <AppSpinner coversScreen notice="Đang đồng bộ bản đồ vệ tinh..." />;
+  const onSelectSpotByIndex = (index) => {
+    if (index >= 0 && index < activeSpots.length) {
+      setActiveSpotIndex(index);
+      carouselRef.current?.scrollToOffset({
+        offset: index * SCREEN_WIDTH,
+        animated: true,
+      });
+      const targetSpot = activeSpots[index];
+      if (targetSpot?.position && mapElement.current) {
+        mapElement.current.animateToRegion(
+          buildVisibleSpotRegion(targetSpot.position.latitude, targetSpot.position.longitude, 0.004),
+          400,
+        );
+      }
+    }
+  };
+
+  const onCarouselScrollEnd = (e) => {
+    const contentOffsetX = e.nativeEvent.contentOffset.x;
+    const newIndex = Math.round(contentOffsetX / SCREEN_WIDTH);
+    if (newIndex >= 0 && newIndex < activeSpots.length && newIndex !== activeSpotIndex) {
+      setActiveSpotIndex(newIndex);
+      const targetSpot = activeSpots[newIndex];
+      if (targetSpot?.position && mapElement.current) {
+        mapElement.current.animateToRegion(
+          buildVisibleSpotRegion(targetSpot.position.latitude, targetSpot.position.longitude, 0.004),
+          400,
+        );
+      }
+    }
+  };
+
+  // Kéo màn hình map về vị trí phương tiện đang đỗ (ở giữa vùng màn hình còn lại không bị che)
+  const onCenterOnSpot = (spot) => {
+    const target = spot || currentSpot;
+    if (target?.position && mapElement.current) {
+      mapElement.current.animateToRegion(
+        buildVisibleSpotRegion(target.position.latitude, target.position.longitude, 0.004),
+        350,
+      );
+    }
+  };
+
+  // Xử lý khi nhấn vào nút tên phương tiện riêng biệt:
+  // Nếu đang focus vào chính xe đó -> kéo map căn giữa xe đó trong vùng nhìn thấy!
+  // Nếu chọn xe khác -> cuộn carousel và chuyển focus sang xe đó + căn giữa map!
+  const onVehiclePillPress = (index, spot) => {
+    if (index === activeSpotIndex) {
+      onCenterOnSpot(spot);
+    } else {
+      onSelectSpotByIndex(index);
+    }
+  };
+
+  // Định vị GPS vị trí hiện tại của người dùng
+  const onRecenterGPS = async () => {
+    const loc = (await refreshLocation()) || coords;
+    if (loc && mapElement.current) {
+      mapElement.current.animateToRegion(
+        buildMapRegion(loc.latitude, loc.longitude, 0.006),
+        350,
+      );
+    }
+  };
+
+  const getVehicleIcon = (type) => {
+    switch (type) {
+      case "bike":
+        return "bicycle";
+      case "bicycle":
+        return "flash";
+      case "other":
+        return "cube";
+      default:
+        return "car";
+    }
+  };
+
+  const renderSpotCard = (spot) => {
+    const spotDurationStr = formatParkingDuration(spot.parkedAt);
+    const spotTimeRemainingStr = spot.expiresAt ? formatTimeRemaining(spot.expiresAt) : null;
+    const spotAlertTier = spot.expiresAt ? getTimerAlertTier(spot.expiresAt) : "NONE";
+
+    return (
+      <View key={spot.id} style={styles.cardPageWrapper}>
+        <View style={styles.cardFrame}>
+          <View style={styles.activeSpotContent}>
+            {/* Header của thẻ xe: Trạng thái & Các nút tên từng phương tiện riêng biệt */}
+            <View style={styles.cardHeaderRow}>
+              <StatusPill isOccupied />
+
+              {/* Dải nút tên từng phương tiện riêng biệt (kéo ngang được, mờ 2 mép nếu tràn chữ) */}
+              <View style={styles.vehiclePillsScrollWrapper}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.vehiclePillsScrollContent}
+                  style={styles.vehiclePillsScrollView}
+                >
+                  {activeSpots.map((s, idx) => {
+                    const isThisFocused = idx === activeSpotIndex;
+                    return (
+                      <Pressable
+                        key={s.id}
+                        onPress={() => onVehiclePillPress(idx, s)}
+                        style={({ pressed }) => [
+                          styles.vehiclePillBtn,
+                          isThisFocused ? styles.vehiclePillBtnFocused : styles.vehiclePillBtnUnfocused,
+                          pressed && styles.vehiclePillBtnPressed,
+                        ]}
+                        hitSlop={4}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Phương tiện: ${s.vehicleName || "Xe"}`}
+                      >
+                        <Ionicons
+                          name={getVehicleIcon(s.vehicleType)}
+                          size={13}
+                          color={isThisFocused ? Palette.brandDark : Palette.inkMuted}
+                        />
+                        <Text
+                          style={[
+                            styles.vehiclePillBtnText,
+                            isThisFocused && styles.vehiclePillBtnTextFocused,
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {s.vehicleName || `Xe ${idx + 1}`}
+                        </Text>
+                        {isThisFocused ? (
+                          <Ionicons
+                            name="locate"
+                            size={12}
+                            color={Palette.brandDark}
+                            style={styles.locateMiniIcon}
+                          />
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+
+                {/* Fade mờ nhẹ ở 2 bên giới hạn hiển thị nếu danh sách tràn sang phải */}
+                {activeSpots.length > 2 ? (
+                  <>
+                    <View style={styles.scrollFadeLeft} pointerEvents="none" />
+                    <View style={styles.scrollFadeRight} pointerEvents="none" />
+                  </>
+                ) : null}
+              </View>
+
+              <Pressable
+                onPress={() => onInspectDetail(spot.id)}
+                style={({ pressed }) => [styles.infoCircleBtn, pressed && { opacity: 0.7 }]}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Xem chi tiết phiên đỗ"
+              >
+                <Ionicons name="information-circle-outline" size={20} color={Palette.inkMuted} />
+              </Pressable>
+            </View>
+
+            {/* Dòng thông tin phụ: Biển số & Thời gian đỗ */}
+            <View style={styles.vehicleSubHeaderRow}>
+              {spot.vehiclePlate ? (
+                <View style={styles.plateTagBadgeHeader}>
+                  <Ionicons name="card-outline" size={11} color={Palette.brandDark} />
+                  <Text style={styles.plateTagTextHeader}>{spot.vehiclePlate}</Text>
+                </View>
+              ) : null}
+
+              {spotDurationStr && !spotTimeRemainingStr ? (
+                <View style={styles.durationPill}>
+                  <Ionicons name="hourglass-outline" size={12} color={Palette.inkMuted} />
+                  <Text style={styles.durationText}>Đã đỗ {spotDurationStr}</Text>
+                </View>
+              ) : null}
+            </View>
+
+            {/* Dòng Hẹn giờ đỗ xe nếu có */}
+            {spotTimeRemainingStr ? (
+              <View
+                style={[
+                  styles.timerBannerPill,
+                  spotAlertTier === "EXPIRED" && styles.timerBannerExpired,
+                  spotAlertTier === "CRITICAL_5" && styles.timerBannerCritical,
+                  (spotAlertTier === "ALERT_15" || spotAlertTier === "ALERT_30") &&
+                    styles.timerBannerWarning,
+                ]}
+              >
+                <Ionicons
+                  name={
+                    spotAlertTier === "EXPIRED"
+                      ? "alert-circle"
+                      : spotAlertTier === "CRITICAL_5"
+                        ? "warning"
+                        : "alarm"
+                  }
+                  size={15}
+                  color={
+                    spotAlertTier === "EXPIRED" || spotAlertTier === "CRITICAL_5"
+                      ? "#FFFFFF"
+                      : spotAlertTier === "ALERT_15" || spotAlertTier === "ALERT_30"
+                        ? Palette.alert
+                        : Palette.brand
+                  }
+                />
+                <Text
+                  style={[
+                    styles.timerBannerText,
+                    (spotAlertTier === "EXPIRED" || spotAlertTier === "CRITICAL_5") &&
+                      styles.timerBannerTextDark,
+                  ]}
+                >
+                  {spotAlertTier === "EXPIRED"
+                    ? `🛑 ĐÃ HẾT GIỜ ĐỖ XE (${spotTimeRemainingStr})`
+                    : `Hạn đỗ: ${spotTimeRemainingStr} (Hết lúc ${formatTimeOnly(spot.expiresAt)})`}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Tên vị trí & Địa chỉ */}
+            <Pressable onPress={() => onInspectDetail(spot.id)}>
+              <Text style={styles.locationHeadline} numberOfLines={2}>
+                {spot.locationName || "Vị trí đã lưu"}
+              </Text>
+            </Pressable>
+
+            {/* Slot Tags */}
+            {(spot.level || spot.sector || spot.bayNumber || spot.vehiclePlate) ? (
+              <View style={styles.slotTagRow}>
+                {spot.vehiclePlate ? (
+                  <View style={styles.plateTagBadge}>
+                    <Ionicons name="card-outline" size={11} color={Palette.inkHeading} />
+                    <Text style={styles.plateTagText}>{spot.vehiclePlate}</Text>
+                  </View>
+                ) : null}
+                {spot.level ? (
+                  <View style={styles.slotTagBadge}>
+                    <Text style={styles.slotTagKey}>TẦNG</Text>
+                    <Text style={styles.slotTagVal}>{spot.level}</Text>
+                  </View>
+                ) : null}
+                {spot.sector ? (
+                  <View style={styles.slotTagBadge}>
+                    <Text style={styles.slotTagKey}>KHU</Text>
+                    <Text style={styles.slotTagVal}>{spot.sector}</Text>
+                  </View>
+                ) : null}
+                {spot.bayNumber ? (
+                  <View style={[styles.slotTagBadge, styles.slotTagBadgeAccent]}>
+                    <Text style={[styles.slotTagKey, styles.slotTagKeyAccent]}>SỐ Ô</Text>
+                    <Text style={[styles.slotTagVal, styles.slotTagValAccent]}>
+                      {spot.bayNumber}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {/* Quick 4-action Grid */}
+            <View style={styles.quickActionRow}>
+              {/* 1. Radar (La bàn) */}
+              <Pressable
+                onPress={() => onOpenRadar(spot.id)}
+                style={({ pressed }) => [
+                  styles.actionTile,
+                  styles.actionTileHero,
+                  pressed && styles.actionTilePressed,
+                ]}
+              >
+                <View style={styles.heroTileGlow}>
+                  <Ionicons name="compass" size={22} color="#FFFFFF" />
+                </View>
+                <Text style={styles.heroTileLabel}>La bàn</Text>
+              </Pressable>
+
+              {/* 2. Chỉ đường */}
+              <Pressable
+                onPress={() => onOpenDirections(spot)}
+                style={({ pressed }) => [
+                  styles.actionTile,
+                  pressed && styles.actionTilePressed,
+                ]}
+              >
+                <View style={styles.tileIconCircle}>
+                  <Ionicons name="navigate-outline" size={20} color={Palette.brand} />
+                </View>
+                <Text style={styles.tileLabel}>Chỉ đường</Text>
+              </Pressable>
+
+              {/* 3. Chia sẻ */}
+              <Pressable
+                onPress={() => onShareLocation(spot)}
+                style={({ pressed }) => [
+                  styles.actionTile,
+                  pressed && styles.actionTilePressed,
+                ]}
+              >
+                <View style={styles.tileIconCircle}>
+                  <Ionicons name="share-social-outline" size={20} color={Palette.inkHeading} />
+                </View>
+                <Text style={styles.tileLabel}>Chia sẻ</Text>
+              </Pressable>
+
+              {/* 4. Chi tiết */}
+              <Pressable
+                onPress={() => onInspectDetail(spot.id)}
+                style={({ pressed }) => [
+                  styles.actionTile,
+                  pressed && styles.actionTilePressed,
+                ]}
+              >
+                <View style={styles.tileIconCircle}>
+                  <Ionicons name="list-outline" size={20} color={Palette.inkHeading} />
+                </View>
+                <Text style={styles.tileLabel}>Chi tiết</Text>
+              </Pressable>
+            </View>
+
+            {/* Bottom CTAs: Hoàn thành & Đỗ thêm xe */}
+            <View style={styles.bottomCtaRow}>
+              <ActionButton
+                label="✓ Đã lấy xe"
+                onPress={() => onConfirmVacateSpot(spot)}
+                kind="tinted"
+                scale="md"
+                style={styles.vacateBtn}
+              />
+              <ActionButton
+                label="+ Đỗ thêm xe"
+                onPress={onTriggerCheckIn}
+                kind="bordered"
+                scale="md"
+                style={styles.recheckBtn}
+              />
+            </View>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  if (isLoading || (locating && !coords && activeSpots.length === 0)) {
+    return <AppSpinner coversScreen notice="Đang đồng bộ vệ tinh và vị trí xe..." />;
   }
 
-  const mapCenter = activeSpot?.position
-    ? buildMapRegion(activeSpot.position.latitude, activeSpot.position.longitude, 0.005)
+  const mapCenter = currentSpot?.position
+    ? buildVisibleSpotRegion(currentSpot.position.latitude, currentSpot.position.longitude, 0.004)
     : coords
       ? buildMapRegion(coords.latitude, coords.longitude, 0.008)
       : APP_CONFIG.DEFAULT_CENTER;
 
   return (
-    <SafeAreaView style={styles.safeContainer} edges={["bottom"]}>
+    <View style={styles.fullScreenContainer}>
+      {/* Bản đồ nền toàn màn hình */}
       <MapView
         ref={mapElement}
         style={styles.mapCanvas}
+        initialRegion={mapCenter}
         region={mapCenter}
         showsUserLocation
-        showsMyLocationButton
+        showsMyLocationButton={false}
+        mapPadding={{ top: insets.top + 70, bottom: 260, left: 16, right: 16 }}
       >
-        {activeSpot?.position ? (
-          <Marker
-            coordinate={activeSpot.position}
-            title="Xe của tôi"
-            description={activeSpot.locationName}
-            pinColor={Palette.brand}
-          />
-        ) : null}
+        {activeSpots.map((spot, idx) => {
+          const isFocused = idx === activeSpotIndex;
+          return (
+            <Marker
+              key={spot.id}
+              coordinate={spot.position}
+              title={spot.vehicleName || "Xe của bạn"}
+              description={spot.locationName}
+              onPress={() => onSelectSpotByIndex(idx)}
+              zIndex={isFocused ? 10 : 5}
+            >
+              <View style={styles.customVehicleMarker}>
+                {isFocused ? <View style={styles.markerBeaconHalo} /> : null}
+                <View
+                  style={[
+                    styles.markerIconBox,
+                    isFocused ? styles.markerIconBoxFocused : styles.markerIconBoxUnfocused,
+                  ]}
+                >
+                  <Ionicons
+                    name={getVehicleIcon(spot.vehicleType)}
+                    size={isFocused ? 18 : 15}
+                    color="#FFFFFF"
+                  />
+                </View>
+                {/* Tag tên/biển số xe dưới marker để phân biệt */}
+                <View style={[styles.markerPlateBadge, isFocused && styles.markerPlateBadgeFocused]}>
+                  <Text
+                    style={[styles.markerPlateText, isFocused && styles.markerPlateTextFocused]}
+                    numberOfLines={1}
+                  >
+                    {spot.vehiclePlate || spot.vehicleName || "Xe"}
+                  </Text>
+                </View>
+                <View style={[styles.markerPinPointer, isFocused && styles.markerPinPointerFocused]} />
+              </View>
+            </Marker>
+          );
+        })}
       </MapView>
 
-      <ScrollView
-        style={styles.sheetPanel}
-        contentContainerStyle={styles.sheetContent}
-        showsVerticalScrollIndicator={false}
+      {/* Thanh Header nổi trên cùng */}
+      <View
+        style={[styles.topFloatingBar, { top: insets.top + 10 }]}
+        pointerEvents="box-none"
       >
-        {gpsError ? (
-          <View style={styles.alertPill}>
-            <Ionicons name="warning-outline" size={16} color={Palette.danger} />
-            <Text style={styles.alertText}>{gpsError}</Text>
+        <View style={styles.appBrandPill}>
+          <View style={styles.appLogoCircle}>
+            <Ionicons name="navigate" size={14} color="#FFFFFF" />
+          </View>
+          <View>
+            <Text style={styles.appName}>SmartParking</Text>
+            <Text style={styles.appSubline}>
+              {activeSpots.length > 1
+                ? `Đang đỗ ${activeSpots.length} xe (${currentSpot?.vehicleName || "Xe"})`
+                : activeSpots.length === 1
+                  ? `Đang ghi nhớ ${currentSpot?.vehicleName || "xe của bạn"}`
+                  : "Sẵn sàng ghi nhớ vị trí"}
+            </Text>
+          </View>
+        </View>
+
+        <Pressable
+          onPress={onRecenterGPS}
+          style={({ pressed }) => [
+            styles.recenterPill,
+            pressed && styles.recenterPressed,
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Định vị GPS vị trí của bạn"
+        >
+          <Ionicons
+            name="locate"
+            size={20}
+            color={Palette.brand}
+          />
+        </Pressable>
+      </View>
+
+      {gpsError ? (
+        <View style={[styles.floatingWarning, { top: insets.top + 70 }]}>
+          <Ionicons name="warning-outline" size={15} color={Palette.danger} />
+          <Text style={styles.warningText}>{gpsError}</Text>
+        </View>
+      ) : null}
+
+      {/* Floating Smart Vehicle Hub Card phía dưới */}
+      <View
+        style={[styles.bottomCardContainer, { paddingBottom: insets.bottom + 74 }]}
+        pointerEvents="box-none"
+      >
+        {activeSpots.length > 1 ? (
+          <View style={styles.carouselPaginationDots} pointerEvents="none">
+            {activeSpots.map((s, idx) => (
+              <View
+                key={s.id}
+                style={[
+                  styles.paginationDot,
+                  idx === activeSpotIndex && styles.paginationDotActive,
+                ]}
+              />
+            ))}
           </View>
         ) : null}
 
-        {activeSpot ? (
-          <View style={styles.activeBlock}>
-            <Text style={styles.blockTitle}>🚗 Phương tiện đang đỗ</Text>
-
-            <SpotRecordCard
-              session={activeSpot}
-              onSelect={onInspectDetail}
-              isHighlighted
-            />
-
-            <View style={styles.twoColumnGrid}>
-              <ActionButton
-                label="Chỉ đường"
-                icon={<Ionicons name="navigate-outline" size={18} color="#FFFFFF" />}
-                onPress={onOpenDirections}
-                style={styles.gridBtn}
-              />
-              <ActionButton
-                label="Chi tiết"
-                icon={<Ionicons name="eye-outline" size={18} color={Palette.brand} />}
-                onPress={onInspectDetail}
-                kind="bordered"
-                style={styles.gridBtn}
-              />
-            </View>
-
-            <ActionButton
-              label="🧭 La bàn tìm xe"
-              onPress={onOpenRadar}
-              scale="lg"
-            />
-
-            <ActionButton
-              label="📤 Chia sẻ vị trí"
-              onPress={onShareLocation}
-              kind="bordered"
-              scale="lg"
-            />
-
-            <ActionButton
-              label="✓ Đã lấy xe"
-              onPress={onConfirmVacate}
-              kind="tinted"
-              scale="lg"
-            />
-          </View>
+        {activeSpots.length > 0 ? (
+          <FlatList
+            ref={carouselRef}
+            data={activeSpots}
+            keyExtractor={(item) => item.id}
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            onMomentumScrollEnd={onCarouselScrollEnd}
+            getItemLayout={(_, index) => ({
+              length: SCREEN_WIDTH,
+              offset: SCREEN_WIDTH * index,
+              index,
+            })}
+            pointerEvents="auto"
+            renderItem={({ item: spot }) => renderSpotCard(spot)}
+          />
         ) : (
-          <View style={styles.vacantState}>
-            <View style={styles.vacantIconRing}>
-              <Ionicons name="car-sport-outline" size={44} color={Palette.brand} />
+          <View style={styles.cardPageWrapper} pointerEvents="auto">
+            <View style={styles.cardFrame}>
+              <View style={styles.vacantSpotContent}>
+                <View style={styles.vacantIllustration}>
+                  <View style={styles.vacantOuterHalo} />
+                  <View style={styles.vacantInnerHalo} />
+                  <View style={styles.vacantIconBox}>
+                    <Ionicons name="car-sport" size={28} color={Palette.brand} />
+                  </View>
+                </View>
+
+                <View style={styles.vacantTextCluster}>
+                  <Text style={styles.vacantHeading}>Chưa lưu vị trí xe</Text>
+                  <Text style={styles.vacantSubtext}>
+                    Đánh dấu ô đỗ xe ngay khi dừng để tìm lại xe dễ dàng bằng La bàn & Bản đồ.
+                  </Text>
+                </View>
+
+                <ActionButton
+                  label="Lưu vị trí đỗ xe ngay"
+                  icon={<Ionicons name="add-circle" size={20} color="#FFFFFF" />}
+                  onPress={onTriggerCheckIn}
+                  scale="lg"
+                  kind="filled"
+                  style={styles.vacantCtaBtn}
+                />
+              </View>
             </View>
-            <Text style={styles.vacantHeading}>Chưa lưu vị trí đỗ xe</Text>
-            <Text style={styles.vacantDescription}>
-              Hãy đánh dấu ô đỗ xe ngay khi bạn vừa dừng xe để tìm lại xe dễ dàng mọi lúc.
-            </Text>
           </View>
         )}
-
-        <ActionButton
-          label="+ Lưu vị trí đỗ xe"
-          onPress={onTriggerCheckIn}
-          scale="lg"
-          style={styles.checkInMainBtn}
-        />
-      </ScrollView>
-    </SafeAreaView>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeContainer: {
+  fullScreenContainer: {
     flex: 1,
-    backgroundColor: Palette.canvas,
+    backgroundColor: "#E2E8F0",
+    position: "relative",
   },
   mapCanvas: {
-    flex: 1,
-    minHeight: 260,
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
-  sheetPanel: {
-    maxHeight: "60%",
-    backgroundColor: Palette.card,
-    borderTopLeftRadius: Metrics.radiusXl,
-    borderTopRightRadius: Metrics.radiusXl,
-    marginTop: -Metrics.radiusLg,
-    ...Elevation.popover,
-  },
-  sheetContent: {
-    padding: Metrics.gapMd,
-    gap: Metrics.gapSm,
-    paddingBottom: Metrics.gapXl + 20,
-  },
-  alertPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: Palette.dangerSoft,
-    padding: Metrics.gapSm,
-    borderRadius: Metrics.radiusSm,
-    gap: Metrics.gapXs,
-  },
-  alertText: {
-    flex: 1,
-    color: Palette.danger,
-    fontSize: Metrics.fontXs,
-  },
-  activeBlock: {
-    gap: Metrics.gapSm,
-  },
-  blockTitle: {
-    fontSize: Metrics.fontLg,
-    fontWeight: "700",
-    color: Palette.inkHeading,
-    marginBottom: 2,
-  },
-  twoColumnGrid: {
-    flexDirection: "row",
-    gap: Metrics.gapSm,
-  },
-  gridBtn: {
-    flex: 1,
-  },
-  vacantState: {
-    alignItems: "center",
-    paddingVertical: Metrics.gapLg,
-    gap: Metrics.gapSm,
-  },
-  vacantIconRing: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
-    backgroundColor: Palette.brandLight,
+  customVehicleMarker: {
     alignItems: "center",
     justifyContent: "center",
   },
-  vacantHeading: {
-    fontSize: Metrics.fontLg,
+  markerBeaconHalo: {
+    position: "absolute",
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "rgba(37, 99, 235, 0.25)",
+  },
+  markerIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Palette.brand,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#FFFFFF",
+    ...Elevation.raised,
+  },
+  markerIconBoxFocused: {
+    backgroundColor: Palette.brand,
+    transform: [{ scale: 1.08 }],
+  },
+  markerIconBoxUnfocused: {
+    backgroundColor: "#64748B",
+    opacity: 0.88,
+  },
+  markerPlateBadge: {
+    backgroundColor: "#FFFFFF",
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: Metrics.radiusPill,
+    marginTop: 2,
+    borderWidth: 1,
+    borderColor: Palette.outline,
+    maxWidth: 95,
+    ...Elevation.flat,
+  },
+  markerPlateBadgeFocused: {
+    backgroundColor: Palette.brandLight,
+    borderColor: Palette.brand,
+  },
+  markerPlateText: {
+    fontSize: 9.5,
     fontWeight: "700",
     color: Palette.inkHeading,
   },
-  vacantDescription: {
+  markerPlateTextFocused: {
+    color: Palette.brandDark,
+    fontWeight: "800",
+  },
+  markerPinPointer: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 5,
+    borderRightWidth: 5,
+    borderTopWidth: 6,
+    borderStyle: "solid",
+    backgroundColor: "transparent",
+    borderLeftColor: "transparent",
+    borderRightColor: "transparent",
+    borderTopColor: Palette.brand,
+    marginTop: -1,
+  },
+  markerPinPointerFocused: {
+    borderTopColor: Palette.brand,
+  },
+  cardPageWrapper: {
+    width: SCREEN_WIDTH,
+    paddingHorizontal: 14,
+  },
+  topFloatingBar: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    zIndex: 10,
+  },
+  appBrandPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.95)",
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: Metrics.radiusPill,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "rgba(226, 232, 240, 0.8)",
+    ...Elevation.floating,
+  },
+  appLogoCircle: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: Palette.brand,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  appName: {
+    fontSize: Metrics.fontBase,
+    fontWeight: "800",
+    color: Palette.inkHeading,
+    letterSpacing: -0.3,
+    lineHeight: 18,
+  },
+  appSubline: {
+    fontSize: 10,
+    color: Palette.inkMuted,
+    fontWeight: "500",
+  },
+  recenterPill: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(255, 255, 255, 0.95)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(226, 232, 240, 0.8)",
+    ...Elevation.floating,
+  },
+  recenterPressed: {
+    opacity: 0.8,
+    transform: [{ scale: 0.95 }],
+  },
+  floatingWarning: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.dangerLight,
+    padding: 10,
+    borderRadius: Metrics.radiusSm,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.2)",
+    ...Elevation.raised,
+    zIndex: 10,
+  },
+  warningText: {
+    flex: 1,
+    color: Palette.danger,
+    fontSize: Metrics.fontXs,
+    fontWeight: "500",
+  },
+  bottomCardContainer: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+  },
+  cardFrame: {
+    backgroundColor: "rgba(255, 255, 255, 0.98)",
+    borderRadius: Metrics.radiusXl - 4,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: "rgba(226, 232, 240, 0.8)",
+    ...Elevation.floating,
+  },
+  activeSpotContent: {
+    gap: 10,
+  },
+  cardHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  vehiclePillsScrollWrapper: {
+    flex: 1,
+    marginHorizontal: 8,
+    position: "relative",
+    justifyContent: "center",
+  },
+  vehiclePillsScrollView: {
+    flexGrow: 0,
+  },
+  vehiclePillsScrollContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 2,
+  },
+  vehiclePillBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: Metrics.radiusPill,
+    gap: 4,
+    borderWidth: 1,
+  },
+  vehiclePillBtnFocused: {
+    backgroundColor: Palette.brandLight,
+    borderColor: Palette.brand,
+    ...Elevation.flat,
+  },
+  vehiclePillBtnUnfocused: {
+    backgroundColor: Palette.cardSubtle,
+    borderColor: Palette.outline,
+    opacity: 0.88,
+  },
+  vehiclePillBtnPressed: {
+    opacity: 0.7,
+  },
+  vehiclePillBtnText: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "600",
+    color: Palette.inkMuted,
+    maxWidth: 105,
+  },
+  vehiclePillBtnTextFocused: {
+    color: Palette.brandDark,
+    fontWeight: "800",
+  },
+  locateMiniIcon: {
+    marginLeft: 1,
+  },
+  scrollFadeLeft: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 10,
+    backgroundColor: "rgba(255, 255, 255, 0.75)",
+  },
+  scrollFadeRight: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    bottom: 0,
+    width: 14,
+    backgroundColor: "rgba(255, 255, 255, 0.8)",
+  },
+  vehicleSubHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  plateTagBadgeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.cardSubtle,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: Metrics.radiusPill,
+    borderWidth: 1,
+    borderColor: Palette.outline,
+    gap: 4,
+  },
+  plateTagTextHeader: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "700",
+    color: Palette.inkHeading,
+  },
+  carouselPaginationDots: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    marginBottom: 8,
+  },
+  paginationDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "rgba(100, 116, 139, 0.35)",
+  },
+  paginationDotActive: {
+    width: 16,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Palette.brand,
+  },
+  vehicleBadgePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.cardSubtle,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: Metrics.radiusPill,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Palette.outline,
+    maxWidth: 160,
+  },
+  vehicleBadgeText: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "700",
+    color: Palette.inkHeading,
+  },
+  durationPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.cardSubtle,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: Metrics.radiusPill,
+    gap: 4,
+    alignSelf: "flex-start",
+  },
+  durationText: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "600",
+    color: Palette.inkMuted,
+  },
+  timerBannerPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.brandLight,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: Metrics.radiusSm,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: "rgba(37, 99, 235, 0.2)",
+  },
+  timerBannerWarning: {
+    backgroundColor: Palette.alertLight,
+    borderColor: "rgba(245, 158, 11, 0.3)",
+  },
+  timerBannerCritical: {
+    backgroundColor: Palette.danger,
+    borderColor: Palette.dangerDark,
+  },
+  timerBannerExpired: {
+    backgroundColor: "#991B1B",
+    borderColor: "#7F1D1D",
+  },
+  timerBannerText: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "700",
+    color: Palette.brandDark,
+    flex: 1,
+  },
+  timerBannerTextDark: {
+    color: "#FFFFFF",
+  },
+  infoCircleBtn: {
+    padding: 4,
+  },
+  locationHeadline: {
+    fontSize: Metrics.fontLg,
+    fontWeight: "800",
+    color: Palette.inkHeading,
+    letterSpacing: -0.3,
+    lineHeight: 22,
+  },
+  slotTagRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  plateTagBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.cardSubtle,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: Metrics.radiusSm - 2,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Palette.outline,
+  },
+  plateTagText: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "800",
+    color: Palette.inkHeading,
+    letterSpacing: 0.5,
+  },
+  slotTagBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: Palette.cardSubtle,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: Metrics.radiusSm - 2,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: Palette.outline,
+  },
+  slotTagKey: {
+    fontSize: 9,
+    fontWeight: "700",
+    color: Palette.inkMuted,
+  },
+  slotTagVal: {
+    fontSize: Metrics.fontSm,
+    fontWeight: "800",
+    color: Palette.inkHeading,
+  },
+  slotTagBadgeAccent: {
+    backgroundColor: Palette.brandLight,
+    borderColor: "rgba(37, 99, 235, 0.2)",
+  },
+  slotTagKeyAccent: {
+    color: Palette.brandDark,
+  },
+  slotTagValAccent: {
+    color: Palette.brandDark,
+  },
+  quickActionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    paddingVertical: 4,
+  },
+  actionTile: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: Palette.cardSubtle,
+    paddingVertical: 10,
+    borderRadius: Metrics.radiusMd - 2,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: Palette.outline,
+  },
+  actionTileHero: {
+    backgroundColor: Palette.brand,
+    borderColor: Palette.brandDark,
+    ...Elevation.flat,
+  },
+  actionTilePressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.96 }],
+  },
+  tileIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Palette.card,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroTileGlow: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tileLabel: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "700",
+    color: Palette.inkBody,
+  },
+  heroTileLabel: {
+    fontSize: Metrics.fontXs,
+    fontWeight: "800",
+    color: "#FFFFFF",
+  },
+  bottomCtaRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 2,
+  },
+  vacateBtn: {
+    flex: 2,
+  },
+  recheckBtn: {
+    flex: 1.2,
+  },
+  vacantSpotContent: {
+    alignItems: "center",
+    paddingVertical: 8,
+    gap: 12,
+  },
+  vacantIllustration: {
+    width: 72,
+    height: 72,
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  vacantOuterHalo: {
+    position: "absolute",
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "rgba(37, 99, 235, 0.08)",
+  },
+  vacantInnerHalo: {
+    position: "absolute",
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "rgba(37, 99, 235, 0.14)",
+  },
+  vacantIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: Palette.brandLight,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(37, 99, 235, 0.2)",
+  },
+  vacantTextCluster: {
+    alignItems: "center",
+    gap: 4,
+  },
+  vacantHeading: {
+    fontSize: Metrics.fontXl,
+    fontWeight: "800",
+    color: Palette.inkHeading,
+    letterSpacing: -0.3,
+  },
+  vacantSubtext: {
     fontSize: Metrics.fontSm,
     color: Palette.inkMuted,
     textAlign: "center",
-    paddingHorizontal: Metrics.gapMd,
-    lineHeight: 20,
+    paddingHorizontal: 16,
+    lineHeight: 18,
   },
-  checkInMainBtn: {
+  vacantCtaBtn: {
+    width: "100%",
     marginTop: 4,
   },
 });
