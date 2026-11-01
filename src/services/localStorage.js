@@ -30,6 +30,15 @@ export function sanitizeSessions(rawItems) {
       state: resolvedState,
       parkedAt: item.parkedAt || item.savedAt || new Date().toISOString(),
       vacatedAt: resolvedState === "OCCUPIED" ? null : (item.vacatedAt || item.retrievedAt || null),
+      // Trường mới cho phương tiện
+      vehicleId: item.vehicleId || null,
+      vehicleName: item.vehicleName || "Phương tiện của tôi",
+      vehicleType: item.vehicleType || "car",
+      vehiclePlate: item.vehiclePlate || "",
+      // Trường mới cho hẹn giờ
+      timerMinutes: typeof item.timerMinutes === "number" ? item.timerMinutes : null,
+      expiresAt: item.expiresAt || null,
+      notificationIds: Array.isArray(item.notificationIds) ? item.notificationIds : [],
     };
   });
 }
